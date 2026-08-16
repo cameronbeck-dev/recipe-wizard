@@ -144,7 +144,8 @@ def get_cors_config():
                 "Cache-Control",
                 "X-Mx-ReqToken",
                 "Keep-Alive",
-                "X-CSRF-Token"
+                "X-CSRF-Token",
+                "X-Device-Id"
             ],
             "expose_headers": ["Content-Range", "X-Content-Range"],
             "max_age": 3600,  # Cache preflight requests for 1 hour
