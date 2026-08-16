@@ -1,8 +1,14 @@
 """Add recipe jobs table for async processing
 
 Revision ID: 005
-Revises: 004
+Revises: 2852b5735058
 Create Date: 2025-09-11 14:50:00.000000
+
+Note: originally chained from a '004' revision that was never committed to
+this repo (production's pre-005 schema was created manually rather than via
+Alembic). Re-parented onto '2852b5735058' (the initial_production_migration
+baseline), which creates exactly the tables this migration's schema assumes
+already exist - confirmed against production's actual pre-005 columns.
 
 """
 from alembic import op
@@ -11,7 +17,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision = '005'
-down_revision = '004'
+down_revision = '2852b5735058'
 branch_labels = None
 depends_on = None
 
