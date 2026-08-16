@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StatusBar, Platform, KeyboardAvoidingView, ScrollView } from 'react-native';
+import { View, Text, StatusBar, Platform, KeyboardAvoidingView, ScrollView, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAppTheme } from '../../constants/ThemeProvider';
+import { useAuth } from '../../contexts/AuthContext';
 import { SavedRecipeData } from '../../types/api';
 import { apiService } from '../../services/api';
+import { GuestRecipesService } from '../../services/guestRecipes';
 import { SavedRecipesSection } from '../../components/SavedRecipesSection';
 import { AllHistorySection } from '../../components/AllHistorySection';
 import { HeaderComponent } from '../../components/HeaderComponent';
@@ -15,17 +17,33 @@ import { PremiumBadge } from '../../components/PremiumBadge';
 export default function HistoryScreen() {
   const { theme, isDark } = useAppTheme();
   const router = useRouter();
+  const { isAuthenticated, justSignedOut } = useAuth();
 
   const [savedRecipes, setSavedRecipes] = useState<SavedRecipeData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
 
   // Load saved recipes function
   const loadSavedRecipes = async () => {
     try {
       setIsLoading(true);
-      const recipes = await apiService.getSavedRecipes();
-      setSavedRecipes(recipes || []);
+
+      if (isAuthenticated) {
+        const recipes = await apiService.getSavedRecipes();
+        setSavedRecipes(recipes || []);
+      } else {
+        const guestRecipes = await GuestRecipesService.getAll();
+        setSavedRecipes(
+          guestRecipes.map(recipe => ({
+            ...recipe,
+            id: recipe.localId,
+            savedAt: recipe.createdAt,
+            isFavorite: true,
+          }))
+        );
+      }
+
       setError(null);
     } catch (error) {
       console.error('Error loading saved recipes:', error);
@@ -39,18 +57,23 @@ export default function HistoryScreen() {
   // Load on component mount
   useEffect(() => {
     loadSavedRecipes();
-  }, []);
+  }, [isAuthenticated]);
 
   // Also reload whenever the screen gains focus
   useFocusEffect(
     React.useCallback(() => {
       loadSavedRecipes();
-    }, [])
+      setBannerDismissed(false);
+    }, [isAuthenticated])
   );
 
   const handleDeleteRecipe = async (recipeId: string) => {
     try {
-      await apiService.unsaveRecipe(recipeId);
+      if (isAuthenticated) {
+        await apiService.unsaveRecipe(recipeId);
+      } else {
+        await GuestRecipesService.remove(recipeId);
+      }
       setSavedRecipes(prev => prev.filter(recipe => recipe.id !== recipeId));
     } catch (error) {
       console.error('Error removing saved recipe:', error);
@@ -143,6 +166,55 @@ export default function HistoryScreen() {
             }}
             showsVerticalScrollIndicator={false}
           >
+            {!isAuthenticated && !bannerDismissed && (
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: theme.colors.wizard.primary + '15',
+                  borderRadius: theme.borderRadius.xl,
+                  padding: theme.spacing.lg,
+                }}
+              >
+                <MaterialCommunityIcons
+                  name={justSignedOut ? 'logout' : 'account-plus'}
+                  size={24}
+                  color={theme.colors.wizard.primary}
+                  style={{ marginRight: theme.spacing.md }}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text
+                    style={{
+                      fontSize: theme.typography.fontSize.bodyMedium,
+                      color: theme.colors.theme.text,
+                      fontFamily: theme.typography.fontFamily.body,
+                      fontWeight: theme.typography.fontWeight.medium,
+                      marginBottom: theme.spacing.sm,
+                    }}
+                  >
+                    {justSignedOut
+                      ? "You're signed out — sign back in to see your saved recipes."
+                      : 'Sign in to save your recipes permanently'}
+                  </Text>
+                  <TouchableOpacity onPress={() => router.push(justSignedOut ? '/auth/signin' : '/auth/signup')}>
+                    <Text
+                      style={{
+                        fontSize: theme.typography.fontSize.bodySmall,
+                        color: theme.colors.wizard.primary,
+                        fontFamily: theme.typography.fontFamily.body,
+                        fontWeight: theme.typography.fontWeight.semibold,
+                      }}
+                    >
+                      {justSignedOut ? 'Sign In' : 'Create Account'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                <TouchableOpacity onPress={() => setBannerDismissed(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <MaterialCommunityIcons name="close" size={18} color={theme.colors.theme.textSecondary} />
+                </TouchableOpacity>
+              </View>
+            )}
+
             {/* Saved Recipes Section */}
             <SavedRecipesSection
               savedRecipes={savedRecipes}
@@ -151,8 +223,8 @@ export default function HistoryScreen() {
               error={error}
             />
 
-            {/* All History Section */}
-            <AllHistorySection />
+            {/* All History Section (server-side pagination — signed-in users only) */}
+            {isAuthenticated && <AllHistorySection />}
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>

@@ -8,20 +8,25 @@ class RecipeJob(Base):
     __tablename__ = "recipe_jobs"
 
     id = Column(String, primary_key=True)  # UUID
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # Exactly one of user_id/device_id is always set: user_id for
+    # authenticated jobs, device_id for guest jobs. result_json is populated
+    # only for guest jobs — authenticated jobs continue using recipe_id.
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    device_id = Column(String, nullable=True, index=True)
     status = Column(String(20), nullable=False, default="pending")  # pending, processing, completed, failed
     job_type = Column(String(20), nullable=False)  # generate, modify
-    
+
     # Request data
     prompt = Column(Text, nullable=False)
     preferences = Column(JSON, nullable=True)
-    
+
     # For modification jobs
     original_recipe_id = Column(Integer, ForeignKey("recipes.id"), nullable=True)
     modification_prompt = Column(Text, nullable=True)
-    
+
     # Results
     recipe_id = Column(Integer, ForeignKey("recipes.id"), nullable=True)
+    result_json = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
     
     # Metadata

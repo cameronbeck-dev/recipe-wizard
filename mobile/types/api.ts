@@ -70,6 +70,9 @@ export interface RecipeJobCreateResponse {
   estimated_completion: string;
   status_url: string;
   polling_interval: number; // seconds between polls
+  // Present only for guest (unauthenticated) generation requests
+  guest_generations_remaining?: number;
+  guest_quota_reset_at?: string; // ISO timestamp
 }
 
 export interface RecipeJobStatus {
@@ -90,7 +93,7 @@ export interface RecipeJobStatus {
 export interface RecipeJobResult {
   job_id: string;
   status: string;
-  recipe_id: string;
+  recipe_id: string | null; // null for guest jobs (results stored server-side without a Recipe row)
   recipe: APIRecipe;
   ingredients: APIIngredient[];
   generated_at: string;

@@ -9,9 +9,10 @@ import {
   AddManualItemRequest
 } from '../types/api';
 import { PreferencesService } from './preferences';
-import { SavedRecipesService } from './savedRecipes';
 import AuthService from './auth';
 import { API_BASE_URL } from './config';
+import { getDeviceId } from './deviceId';
+import { GuestRecipe } from './guestRecipes';
 
 export class ApiError extends Error {
   status: number;
@@ -25,6 +26,44 @@ export class ApiError extends Error {
     this.code = code;
     this.data = data;
   }
+}
+
+export type GuestErrorCode = 'GUEST_QUOTA_EXCEEDED' | 'GUEST_MODE_UNAVAILABLE' | 'INVALID_DEVICE_ID';
+
+// Thrown by startRecipeGeneration when the backend rejects a guest request
+// for a guest-specific reason (quota exhausted, rate limiter unavailable, or
+// a malformed device id). Lets callers branch on `.code` instead of parsing
+// the error message.
+export class GuestGenerationError extends Error {
+  code: GuestErrorCode;
+  resetAt?: string;
+
+  constructor(message: string, code: GuestErrorCode, resetAt?: string) {
+    super(message);
+    this.name = 'GuestGenerationError';
+    this.code = code;
+    this.resetAt = resetAt;
+  }
+}
+
+function parseGuestError(status: number, errorData: any): GuestGenerationError | null {
+  if (status === 429 && errorData?.code === 'GUEST_QUOTA_EXCEEDED') {
+    return new GuestGenerationError(
+      errorData.detail || "You've used all your free recipe generations for this week.",
+      'GUEST_QUOTA_EXCEEDED',
+      errorData.reset_at
+    );
+  }
+
+  const detail = typeof errorData?.detail === 'string' ? errorData.detail : '';
+  if (detail.startsWith('GUEST_MODE_UNAVAILABLE')) {
+    return new GuestGenerationError(detail, 'GUEST_MODE_UNAVAILABLE');
+  }
+  if (detail.startsWith('INVALID_DEVICE_ID')) {
+    return new GuestGenerationError(detail, 'INVALID_DEVICE_ID');
+  }
+
+  return null;
 }
 
 class APIService {
@@ -60,11 +99,18 @@ class APIService {
    * Make authenticated request with automatic token refresh on 401
    */
   private async makeAuthenticatedRequest(
-    url: string, 
+    url: string,
     options: RequestInit = {}
   ): Promise<Response> {
     let headers = await this.getAuthHeaders();
-    
+    const hadToken = !!headers['Authorization'];
+
+    try {
+      headers['X-Device-Id'] = await getDeviceId();
+    } catch (error) {
+      console.warn('⚠️ Could not retrieve device id:', error);
+    }
+
     // Merge with provided headers
     if (options.headers) {
       const provided = options.headers as any;
@@ -76,18 +122,19 @@ class APIService {
       headers,
     });
 
-    // If 401, try to refresh token and retry once
-    if (response.status === 401) {
+    // If 401, try to refresh token and retry once. Skip entirely for guests
+    // (no stored token) — there's no refresh token to retry with.
+    if (response.status === 401 && hadToken) {
       // console.log('🔄 Received 401, attempting token refresh...');
-      
+
       const refreshResult = await AuthService.refreshToken();
-      
+
       if (refreshResult) {
         // console.log('✅ Token refreshed, retrying request');
-        
+
         // Update headers with new token
         headers['Authorization'] = `Bearer ${refreshResult.accessToken}`;
-        
+
         // Retry the request with new token
         response = await fetch(url, {
           ...options,
@@ -428,6 +475,8 @@ class APIService {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
+        const guestError = parseGuestError(response.status, errorData);
+        if (guestError) throw guestError;
         throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
       }
 
@@ -436,6 +485,7 @@ class APIService {
       return jobResponse;
     } catch (error) {
       console.error('Error starting recipe generation job:', error);
+      if (error instanceof GuestGenerationError) throw error;
       throw new Error('Failed to start recipe generation. Please try again.');
     }
   }
@@ -514,9 +564,11 @@ class APIService {
           // console.log('✅ Job completed:', jobId);
           const result = await this.getJobResult(jobId);
           
-          // Convert to RecipeGenerationResponse format
+          // Convert to RecipeGenerationResponse format. Guest jobs have no
+          // recipe_id (no Recipe row is created server-side) — fall back to
+          // the job id so callers always have a stable local identifier.
           return {
-            id: result.recipe_id,
+            id: result.recipe_id ?? jobId,
             recipe: result.recipe,
             ingredients: result.ingredients,
             generatedAt: result.generated_at,
@@ -546,6 +598,37 @@ class APIService {
         throw error;
       }
     }
+  }
+
+  /**
+   * Import locally-stored guest recipes into the signed-in account. Called
+   * on both registration and login so guest history merges either way.
+   * Requires an authenticated session — dedupes server-side by normalized title.
+   */
+  async importGuestRecipes(recipes: GuestRecipe[]): Promise<{ imported: number; skipped: number }> {
+    const payload = {
+      recipes: recipes.map(r => ({
+        recipe: r.recipe,
+        ingredients: r.ingredients,
+        userPrompt: r.userPrompt,
+      })),
+    };
+
+    const response = await this.makeAuthenticatedRequest(`${this.baseUrl}/api/recipes/import`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new ApiError(
+        errorData.detail || `HTTP ${response.status}: ${response.statusText}`,
+        response.status,
+        errorData.code
+      );
+    }
+
+    return await response.json();
   }
 
   // ========================================

@@ -171,3 +171,37 @@ class SaveRecipeSuccessResponse(BaseModel):
     success: bool
     message: str
     savedRecipeId: str
+
+# Recipe Import Schemas (guest -> account graduation)
+class RecipeImportIngredient(BaseModel):
+    """A single ingredient in a locally-stored guest recipe being imported"""
+    name: str
+    amount: str
+    unit: Optional[str] = None
+    category: str
+
+class RecipeImportRecipe(BaseModel):
+    """The recipe fields of a locally-stored guest recipe being imported"""
+    title: str = Field(..., min_length=1, max_length=500)
+    description: Optional[str] = None
+    instructions: List[str] = Field(..., min_items=1)
+    prepTime: Optional[int] = None
+    cookTime: Optional[int] = None
+    servings: Optional[int] = None
+    difficulty: Optional[str] = None
+    tips: Optional[List[str]] = None
+
+class RecipeImportItem(BaseModel):
+    """A single locally-stored guest recipe to import into an account"""
+    recipe: RecipeImportRecipe
+    ingredients: List[RecipeImportIngredient] = Field(default_factory=list)
+    userPrompt: Optional[str] = None
+
+class RecipeImportRequest(BaseModel):
+    """Request body for POST /api/recipes/import"""
+    recipes: List[RecipeImportItem] = Field(default_factory=list, max_items=100)
+
+class RecipeImportResponse(BaseModel):
+    """Response for POST /api/recipes/import"""
+    imported: int
+    skipped: int

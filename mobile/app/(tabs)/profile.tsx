@@ -149,7 +149,10 @@ export default function ProfileScreen() {
             try {
               setSigningOut(true);
               await logout();
-              router.replace('/auth/signin');
+              // Land in guest mode, not a sign-in wall — the user has
+              // already onboarded, so index.tsx's routing sends them
+              // straight back to the prompt tab.
+              router.replace('/(tabs)/prompt');
             } catch (error) {
               console.error('Sign out error:', error);
               Alert.alert('Error', 'Failed to sign out. Please try again.');
@@ -184,7 +187,12 @@ export default function ProfileScreen() {
                     try {
                       setDeletingAccount(true);
                       await deleteAccount();
-                      router.replace('/auth/signin');
+                      // Land in guest mode, not a sign-in wall, matching
+                      // sign-out — the account is gone, not "signed out",
+                      // so we don't set justSignedOut (its "sign back in to
+                      // see your saved recipes" banner would be misleading
+                      // here: there's nothing left to sign back in to).
+                      router.replace('/(tabs)/prompt');
                     } catch (error) {
                       console.error('Delete account error:', error);
                       Alert.alert(
@@ -1174,13 +1182,13 @@ export default function ProfileScreen() {
           {/* Account Section */}
           <ExpandableCard
             title="Account"
-            subtitle={user?.email || 'Not logged in'}
+            subtitle={user?.email || 'Guest'}
             icon="account"
             defaultExpanded={false}
             style={{ marginTop: theme.spacing.lg }}
           >
             <View>
-              {user && (
+              {user ? (
                 <View style={{ marginBottom: theme.spacing.lg }}>
                   <Text style={{
                     color: theme.colors.theme.textSecondary,
@@ -1204,23 +1212,51 @@ export default function ProfileScreen() {
                     {user.email}
                   </Text>
                 </View>
+              ) : (
+                <View style={{ marginBottom: theme.spacing.lg }}>
+                  <Text style={{
+                    color: theme.colors.theme.textSecondary,
+                    fontSize: theme.typography.fontSize.bodyMedium,
+                    marginBottom: theme.spacing.lg,
+                    lineHeight: 20,
+                  }}>
+                    You're using Recipe Wizard as a guest. Create an account to save your recipes permanently, unlock premium features, and sync across devices.
+                  </Text>
+                  <Button
+                    onPress={() => router.push('/auth/signup')}
+                    variant="primary"
+                    leftIcon="account-plus"
+                    style={{ marginBottom: theme.spacing.md }}
+                  >
+                    Create an Account
+                  </Button>
+                  <Button
+                    onPress={() => router.push('/auth/signin')}
+                    variant="outline"
+                    leftIcon="login"
+                  >
+                    Sign In
+                  </Button>
+                </View>
               )}
-              
-              <Button
-                onPress={handleSignOut}
-                variant="outline"
-                disabled={signingOut || deletingAccount}
-                loading={signingOut}
-                leftIcon="logout"
-                style={{
-                  borderColor: theme.colors.status.error,
-                }}
-                textStyle={{
-                  color: theme.colors.status.error,
-                }}
-              >
-                {signingOut ? "Signing Out..." : "Sign Out"}
-              </Button>
+
+              {user && (
+                <Button
+                  onPress={handleSignOut}
+                  variant="outline"
+                  disabled={signingOut || deletingAccount}
+                  loading={signingOut}
+                  leftIcon="logout"
+                  style={{
+                    borderColor: theme.colors.status.error,
+                  }}
+                  textStyle={{
+                    color: theme.colors.status.error,
+                  }}
+                >
+                  {signingOut ? "Signing Out..." : "Sign Out"}
+                </Button>
+              )}
 
               {user && (
                 <View style={{ marginTop: theme.spacing['2xl'] }}>

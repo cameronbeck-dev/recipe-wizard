@@ -28,6 +28,7 @@ import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { PremiumFeature } from '../components/PremiumFeature';
 import { usePremium, PREMIUM_FEATURES } from '../contexts/PremiumContext';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
 
 
 export default function RecipeResultScreen() {
@@ -37,6 +38,7 @@ export default function RecipeResultScreen() {
   const params = useLocalSearchParams();
   const { isOnline } = useNetworkStatus();
   const { isPremium, checkPremiumFeature } = usePremium();
+  const { user } = useAuth();
   const toast = useToast();
 
   const [recipeData, setRecipeData] = useState<RecipeGenerationResponse | null>(null);
@@ -115,10 +117,10 @@ export default function RecipeResultScreen() {
     }
   }, [recipeData]);
 
-  // Check if recipe is saved
+  // Check if recipe is saved (signed-in users only — guests have no saved-recipes endpoint)
   useEffect(() => {
     const checkSavedStatus = async () => {
-      if (recipeData?.id) {
+      if (user && recipeData?.id) {
         try {
           const saved = await apiService.isRecipeSaved(recipeData.id);
           setIsSaved(saved);
@@ -127,14 +129,14 @@ export default function RecipeResultScreen() {
         }
       }
     };
-    
+
     checkSavedStatus();
-  }, [recipeData?.id]);
+  }, [user, recipeData?.id]);
 
   // Check whether this recipe is already in the user's shopping list
   useEffect(() => {
     const checkAlreadyInList = async () => {
-      if (!isPremium || !recipeData?.id || !isOnline) return;
+      if (!user || !isPremium || !recipeData?.id || !isOnline) return;
       try {
         const recipes = await apiService.getShoppingListRecipes();
         setAlreadyInShoppingList(recipes.some(r => r.recipeId === recipeData.id));
@@ -144,7 +146,7 @@ export default function RecipeResultScreen() {
     };
 
     checkAlreadyInList();
-  }, [isPremium, recipeData?.id, isOnline]);
+  }, [user, isPremium, recipeData?.id, isOnline]);
 
   // Modification progress visualization logic
   
@@ -234,7 +236,19 @@ export default function RecipeResultScreen() {
 
   const handleSaveToggle = async () => {
     if (!recipeData) return;
-    
+
+    if (!user) {
+      Alert.alert(
+        'Sign in required',
+        'Create an account or sign in to save recipes to your favorites.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Sign In', onPress: () => router.push('/auth/signin') },
+        ]
+      );
+      return;
+    }
+
     try {
       if (isSaved) {
         // Remove from saved recipes
@@ -253,6 +267,18 @@ export default function RecipeResultScreen() {
 
   const handleAddToShoppingList = async (allowDuplicate: boolean = false) => {
     if (!recipeData) return;
+
+    if (!user) {
+      Alert.alert(
+        'Sign in required',
+        'Create an account or sign in to add recipes to your shopping list.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Sign In', onPress: () => router.push('/auth/signin') },
+        ]
+      );
+      return;
+    }
 
     // Check network connectivity
     if (!isOnline) {
@@ -305,6 +331,18 @@ export default function RecipeResultScreen() {
 
   const handleModifyRecipe = async () => {
     if (!recipeData) return;
+
+    if (!user) {
+      Alert.alert(
+        'Sign in required',
+        'Create an account or sign in to modify recipes.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Sign In', onPress: () => router.push('/auth/signin') },
+        ]
+      );
+      return;
+    }
 
     if (!modificationText.trim()) {
       setModifyCurrentButtonText('Please enter modification request');

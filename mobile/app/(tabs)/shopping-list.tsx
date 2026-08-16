@@ -15,6 +15,7 @@ import { PremiumFeature } from '../../components/PremiumFeature';
 import { usePremium } from '../../contexts/PremiumContext';
 import { PremiumBadge } from '../../components/PremiumBadge';
 import { useToast } from '../../contexts/ToastContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { PreferencesService } from '../../services/preferences';
 import { CategorySection } from '../../components/shopping/CategorySection';
 import { ShoppingListRow } from '../../components/shopping/ShoppingListRow';
@@ -27,6 +28,7 @@ export default function ShoppingListScreen() {
   const { theme } = useAppTheme();
   const { isOnline } = useNetworkStatus();
   const { isPremium } = usePremium();
+  const { user } = useAuth();
   const toast = useToast();
 
   const [shoppingList, setShoppingList] = useState<ShoppingListItem[]>([]);
@@ -234,15 +236,22 @@ export default function ShoppingListScreen() {
     }
   };
 
-  // Load shopping list from API/cache
+  // Load shopping list from API/cache. Guests have no shopping list at all —
+  // skip every backend/cache call so nothing fires in that state.
   useEffect(() => {
-    loadShoppingList();
-  }, []);
+    if (user) {
+      loadShoppingList();
+    } else {
+      setLoading(false);
+    }
+  }, [user]);
 
   useFocusEffect(
     React.useCallback(() => {
-      loadShoppingList();
-    }, [isOnline])
+      if (user) {
+        loadShoppingList();
+      }
+    }, [isOnline, user])
   );
 
   const loadShoppingList = async () => {
@@ -334,6 +343,60 @@ export default function ShoppingListScreen() {
           >
             Getting your ingredients ready...
           </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // Guests have no account to attach a shopping list to — gate before any
+  // premium check, and never fire a backend call in this state.
+  if (!user) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.theme.background }} edges={['top']}>
+        <HeaderComponent
+          title="Shopping List"
+          subtitle="Sign in required"
+          rightContent={
+            <MaterialCommunityIcons
+              name="lock-outline"
+              size={24}
+              color={theme.colors.wizard.primary}
+            />
+          }
+        />
+
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32 }}>
+          <MaterialCommunityIcons
+            name="cart-outline"
+            size={80}
+            color={theme.colors.theme.textSecondary}
+          />
+          <Text
+            style={{
+              fontSize: theme.typography.fontSize.headlineMedium,
+              fontWeight: theme.typography.fontWeight.bold,
+              color: theme.colors.theme.text,
+              textAlign: 'center',
+              marginTop: 16,
+              marginBottom: 8,
+            }}
+          >
+            Sign In for Shopping Lists
+          </Text>
+          <Text
+            style={{
+              fontSize: theme.typography.fontSize.bodyLarge,
+              color: theme.colors.theme.textSecondary,
+              textAlign: 'center',
+              lineHeight: 24,
+              marginBottom: 24,
+            }}
+          >
+            Shopping lists are a premium feature available to signed-in users. Sign in or create an account to get started.
+          </Text>
+          <Button mode="contained" icon="login" onPress={() => router.push('/auth/signin')}>
+            Sign In
+          </Button>
         </View>
       </SafeAreaView>
     );

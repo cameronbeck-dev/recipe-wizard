@@ -14,6 +14,7 @@ Recipe Wizard is a cross-platform mobile application that generates personalized
 - **Cross-Platform**: Works on iOS, Android, and Web
 - **User Preferences**: Comprehensive dietary restrictions and cooking preferences
 - **Authentication**: Full user registration and login system
+- **Guest Mode**: Try recipe generation without an account — up to 10 free generations per rolling 7-day window per device, identified by a locally-persisted device id (no login required). Guest recipes are stored locally on-device (local-first, no server-side history) and automatically migrate into a real account on sign-up or login, so nothing is lost when a guest decides to create an account.
 
 ### Advanced Features ✅ **IMPLEMENTED**
 - **Tab Navigation**: Intuitive bottom tab bar with four core sections
@@ -59,7 +60,7 @@ Recipe Wizard is a cross-platform mobile application that generates personalized
 - **Python** (v3.8 or higher)
 - **Expo CLI** (`npm install -g @expo/cli`)
 - **PostgreSQL** (for backend database)
-- **Redis** (for rate limiting - optional for development)
+- **Redis** (for rate limiting; required for guest recipe generation to work at all — it fails closed without it)
 - **OpenAI API Key** (for OpenAI recipe generation)
 
 ### Setup Instructions
@@ -119,7 +120,12 @@ Recipe Wizard is a cross-platform mobile application that generates personalized
    DEFAULT_MODEL_FREE=gpt-5.6-luna
 DEFAULT_MODEL_PAID=gpt-5.6-terra
 
-   # Optional: Rate Limiting
+   # Guest mode: free recipe generations per rolling 7-day window per device
+   GUEST_WEEKLY_LIMIT=10
+
+   # Rate Limiting — NOTE: no longer truly optional. Guest recipe generation
+   # fails closed (returns 503) when Redis is unavailable, since the weekly
+   # quota check depends on it.
    REDIS_URL=redis://localhost:6379
 
    # Development
@@ -354,6 +360,9 @@ ACCESS_TOKEN_EXPIRE_MINUTES=30
 OPENAI_API_KEY=your-openai-api-key-here
 DEFAULT_MODEL_FREE=gpt-5.6-luna
 DEFAULT_MODEL_PAID=gpt-5.6-terra
+
+# Guest mode
+GUEST_WEEKLY_LIMIT=10
 
 # API Configuration
 API_HOST=0.0.0.0

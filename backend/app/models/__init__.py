@@ -5,6 +5,7 @@ from .recipe import Recipe, RecipeIngredient, SavedRecipe
 from .conversation import Conversation, ConversationFeedback
 from .job import RecipeJob
 from .shopping_list import ShoppingList, ShoppingListItem, ShoppingListRecipeBreakdown, ShoppingListRecipeAssociation
+from .guest_usage import GuestUsage
 
 __all__ = [
     "Base",
@@ -19,5 +20,6 @@ __all__ = [
     "ShoppingList",
     "ShoppingListItem",
     "ShoppingListRecipeBreakdown",
-    "ShoppingListRecipeAssociation"
+    "ShoppingListRecipeAssociation",
+    "GuestUsage"
 ]

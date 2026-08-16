@@ -37,12 +37,14 @@ class RecipeJobCreateResponse(BaseModel):
     estimated_completion: str
     status_url: str
     polling_interval: int = 3  # seconds
+    guest_generations_remaining: Optional[int] = None
+    guest_quota_reset_at: Optional[str] = None
 
 class RecipeJobResult(BaseModel):
     """Complete job result with recipe data"""
     job_id: str
     status: str
-    recipe_id: str
+    recipe_id: Optional[str] = None  # None for guest jobs (no Recipe row created)
     recipe: Dict[str, Any]  # Full recipe data
     ingredients: list[Dict[str, Any]]  # Full ingredients data
     generated_at: str

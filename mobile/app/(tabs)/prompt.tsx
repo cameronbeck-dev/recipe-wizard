@@ -1,14 +1,18 @@
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { View, Text, ScrollView, StatusBar, TouchableOpacity, Platform, KeyboardAvoidingView, Animated } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Portal, Dialog, Button as PaperButton } from 'react-native-paper';
 import { useRouter } from 'expo-router';
 import { Button, TextInput, useAppTheme, ExpandableCard, PillSlider, PillSliderOption } from '../../components';
 import { PremiumFeature } from '../../components/PremiumFeature';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { apiService } from '../../services/api';
+import { apiService, GuestGenerationError } from '../../services/api';
 import { RecipeIdeasResponse } from '../../types/api';
 import { PreferencesService } from '../../services/preferences';
 import { UserPreferences } from '../../types/api';
+import { useAuth } from '../../contexts/AuthContext';
+import { useToast } from '../../contexts/ToastContext';
+import { GuestRecipesService } from '../../services/guestRecipes';
 import {
   getRandomHeroSubtitle,
   getRandomHeroTitle,
@@ -18,14 +22,37 @@ import {
   getRandomIdeaLoadingButtonText,
 } from '../../constants/copy';
 
+// Mirrors the backend's default GUEST_WEEKLY_LIMIT (see CLAUDE.md) — the
+// job-creation response only tells us how many generations remain, not the
+// configured total, so this is used purely for display.
+const GUEST_WEEKLY_LIMIT = 10;
+
+function formatResetIn(resetAt: string | null): string {
+  if (!resetAt) return 'soon';
+  const diffMs = new Date(resetAt).getTime() - Date.now();
+  if (diffMs <= 0) return 'soon';
+  const days = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+  const hours = Math.floor((diffMs % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+  if (days >= 1) return `in ${days} day${days === 1 ? '' : 's'}`;
+  if (hours >= 1) return `in ${hours} hour${hours === 1 ? '' : 's'}`;
+  return 'in less than an hour';
+}
+
 export default function PromptScreen() {
   const { theme, isDark, setThemeMode, themeMode } = useAppTheme();
   const router = useRouter();
-  
+  const { isAuthenticated } = useAuth();
+  const toast = useToast();
+
   const [prompt, setPrompt] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
+
+  // Guest quota state (only populated for unauthenticated requests)
+  const [guestGenerationsRemaining, setGuestGenerationsRemaining] = useState<number | null>(null);
+  const [guestQuotaResetAt, setGuestQuotaResetAt] = useState<string | null>(null);
+  const [quotaExceededDialogVisible, setQuotaExceededDialogVisible] = useState(false);
+
   // Recipe Ideas Generation State
   const [sliderMode, setSliderMode] = useState<'preset' | 'generate'>('preset');
   const [generatedIdeas, setGeneratedIdeas] = useState<Array<{id: string; title: string; description: string}>>([]);
@@ -243,9 +270,14 @@ export default function PromptScreen() {
           preferredDifficulty: difficulty,
         },
       });
-      
+
+      if (jobResponse.guest_generations_remaining !== undefined) {
+        setGuestGenerationsRemaining(jobResponse.guest_generations_remaining);
+        setGuestQuotaResetAt(jobResponse.guest_quota_reset_at ?? null);
+      }
+
       // console.log('🚀 Job started:', jobResponse.job_id);
-      
+
       // Poll job until completion with attempt tracking
       const recipeData = await apiService.pollJobUntilComplete(
         jobResponse.job_id,
@@ -259,46 +291,74 @@ export default function PromptScreen() {
           }
         }
       );
-      
+
+      // The backend keeps no history for guests — this is the only place a
+      // guest's generated recipe survives past this screen.
+      if (!isAuthenticated) {
+        GuestRecipesService.add(recipeData).catch(() => {});
+      }
+
       // Success animation - quickly fill all remaining segments
       setCurrentAttempt(3);
       setSegmentProgress(1);
-      
+
       // Wait for success animation, then navigate
       setTimeout(() => {
         setIsLoading(false);
         setCurrentButtonText('Generate Recipe'); // Reset on success
-        
+
         // Navigate with the recipe data
         router.push({
           pathname: '/recipe-result',
-          params: { 
+          params: {
             userPrompt: prompt,
             recipeData: JSON.stringify(recipeData),
             timestamp: Date.now().toString()
           }
         });
       }, 300); // 0.3 second success animation
-      
+
     } catch (error) {
       console.error('Recipe generation error:', error);
-      
+
       // IMMEDIATELY stop text cycling to prevent race condition
       if (textCyclingInterval.current) {
         clearInterval(textCyclingInterval.current);
         textCyclingInterval.current = null;
       }
-      
+
+      if (error instanceof GuestGenerationError && error.code === 'GUEST_QUOTA_EXCEEDED') {
+        setGuestGenerationsRemaining(0);
+        setGuestQuotaResetAt(error.resetAt ?? null);
+        setQuotaExceededDialogVisible(true);
+        setIsLoading(false);
+        setCurrentButtonText('Generate Recipe');
+        setCurrentAttempt(1);
+        setSegmentProgress(0);
+        return;
+      }
+
+      if (error instanceof GuestGenerationError && error.code === 'GUEST_MODE_UNAVAILABLE') {
+        toast.show('Guest generation is temporarily unavailable. Please sign in or try again shortly.', {
+          variant: 'error',
+        });
+        setIsLoading(false);
+        setCurrentButtonText('Generate Recipe');
+        setCurrentAttempt(1);
+        setSegmentProgress(0);
+        return;
+      }
+
       setIsLoading(false);
       setIsInErrorState(true);
-      
+
       // Show error in button for retry
       if (error instanceof Error) {
         setCurrentButtonText(error.message);
       } else {
         setCurrentButtonText('Something went wrong. Tap to retry.');
       }
-      
+
       // Reset progress to show error state
       setCurrentAttempt(1);
       setSegmentProgress(0);
@@ -585,6 +645,37 @@ export default function PromptScreen() {
             >
               {heroSubtitle}
             </Text>
+
+            {!isAuthenticated && guestGenerationsRemaining !== null && (
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  marginTop: theme.spacing.lg,
+                  paddingHorizontal: theme.spacing.md,
+                  paddingVertical: theme.spacing.sm,
+                  borderRadius: theme.borderRadius.full,
+                  backgroundColor: theme.colors.wizard.primary + '15',
+                }}
+              >
+                <MaterialCommunityIcons
+                  name="star-four-points"
+                  size={16}
+                  color={theme.colors.wizard.primary}
+                  style={{ marginRight: theme.spacing.sm }}
+                />
+                <Text
+                  style={{
+                    fontSize: theme.typography.fontSize.bodySmall,
+                    color: theme.colors.wizard.primary,
+                    fontFamily: theme.typography.fontFamily.body,
+                    fontWeight: theme.typography.fontWeight.medium,
+                  }}
+                >
+                  {guestGenerationsRemaining} of {GUEST_WEEKLY_LIMIT} free recipes left this week
+                </Text>
+              </View>
+            )}
           </View>
 
           {/* Enhanced Input Section */}
@@ -1261,6 +1352,37 @@ export default function PromptScreen() {
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
+
+      {/* Guest weekly quota exceeded */}
+      <Portal>
+        <Dialog visible={quotaExceededDialogVisible} onDismiss={() => setQuotaExceededDialogVisible(false)}>
+          <Dialog.Icon icon="crown-outline" />
+          <Dialog.Title>Weekly limit reached</Dialog.Title>
+          <Dialog.Content>
+            <Text
+              style={{
+                color: theme.colors.theme.textSecondary,
+                fontSize: theme.typography.fontSize.bodyMedium,
+                lineHeight: theme.typography.fontSize.bodyMedium * 1.4,
+              }}
+            >
+              You've used all your free recipe generations for this week. Your free recipes reset {formatResetIn(guestQuotaResetAt)}.
+              {'\n\n'}Sign up for extra generations and a better model — it only takes a minute.
+            </Text>
+          </Dialog.Content>
+          <Dialog.Actions>
+            <PaperButton onPress={() => setQuotaExceededDialogVisible(false)}>Maybe later</PaperButton>
+            <PaperButton
+              onPress={() => {
+                setQuotaExceededDialogVisible(false);
+                router.push('/auth/signup');
+              }}
+            >
+              Sign Up
+            </PaperButton>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
     </>
   );
 }

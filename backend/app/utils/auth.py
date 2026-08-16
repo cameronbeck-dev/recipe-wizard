@@ -1,15 +1,17 @@
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 import os
+import uuid
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import HTTPException, status, Depends
+from fastapi import HTTPException, status, Depends, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import User
 from ..schemas import TokenData
+from ..constants import DEFAULT_GROCERY_CATEGORIES
 
 # Configuration
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -112,12 +114,6 @@ class AuthUtils:
         # Hash the password
         hashed_password = AuthUtils.get_password_hash(password)
         
-        # Default grocery categories matching mobile app
-        default_categories = [
-            'produce', 'butchery', 'dry-goods', 'chilled', 
-            'frozen', 'pantry', 'bakery', 'deli', 'beverages', 'spices'
-        ]
-        
         # Create user with defaults
         user_data = {
             'email': email,
@@ -128,7 +124,7 @@ class AuthUtils:
             'is_active': True,
             'is_verified': False,  # Could implement email verification later
             'units': 'metric',
-            'grocery_categories': default_categories,
+            'grocery_categories': DEFAULT_GROCERY_CATEGORIES,
             'default_servings': 4,
             'dietary_restrictions': [],
             'allergens': [],
@@ -213,6 +209,33 @@ async def get_current_user_optional(
         
     except HTTPException:
         return None
+
+# Guest identity (for unauthenticated recipe generation)
+async def get_device_id(
+    x_device_id: Optional[str] = Header(None, alias="X-Device-Id")
+) -> Optional[str]:
+    """
+    Optional guest-device identity dependency.
+
+    Returns None if the header is absent. Raises 400 if present but not a
+    valid UUID — strict validation bounds guest_usage row cardinality and
+    Redis key cardinality against a trivially-scripted flood.
+    """
+    if not x_device_id:
+        return None
+
+    try:
+        uuid.UUID(x_device_id)
+    except ValueError:
+        # detail is a plain string, not a dict — the app's global
+        # HTTPException handler builds an ErrorResponse whose `detail`
+        # field is typed `str`; a dict there breaks the handler.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="INVALID_DEVICE_ID: X-Device-Id must be a valid UUID"
+        )
+
+    return x_device_id
 
 # Utility functions for token creation
 def create_access_token_for_user(user: User) -> Dict[str, Any]:

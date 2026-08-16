@@ -10,7 +10,9 @@ from .recipe import (
     RecipeCreate, RecipeUpdate, RecipeResponse, RecipeAPI,
     RecipeGenerationRequest, RecipeGenerationResponse, RecipeModificationRequest,
     RecipeIdeaGenerationRequest, RecipeIdea, RecipeIdeasResponse,
-    SavedRecipeCreate, SavedRecipeUpdate, SavedRecipeResponse, SaveRecipeSuccessResponse
+    SavedRecipeCreate, SavedRecipeUpdate, SavedRecipeResponse, SaveRecipeSuccessResponse,
+    RecipeImportIngredient, RecipeImportRecipe, RecipeImportItem,
+    RecipeImportRequest, RecipeImportResponse
 )
 from .conversation import (
     ConversationCreate, ConversationUpdate, ConversationResponse, ConversationAPI,
@@ -39,7 +41,9 @@ __all__ = [
     "RecipeGenerationRequest", "RecipeGenerationResponse", "RecipeModificationRequest",
     "RecipeIdeaGenerationRequest", "RecipeIdea", "RecipeIdeasResponse",
     "SavedRecipeCreate", "SavedRecipeUpdate", "SavedRecipeResponse", "SaveRecipeSuccessResponse",
-    
+    "RecipeImportIngredient", "RecipeImportRecipe", "RecipeImportItem",
+    "RecipeImportRequest", "RecipeImportResponse",
+
     # Conversation schemas
     "ConversationCreate", "ConversationUpdate", "ConversationResponse", "ConversationAPI",
     "ConversationFeedbackCreate", "ConversationFeedbackResponse", "UserRatingUpdate",

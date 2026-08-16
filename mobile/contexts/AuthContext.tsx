@@ -3,6 +3,8 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import AuthService, { User, LoginCredentials, RegisterData, AuthTokens } from '../services/auth';
 import { PreferencesService } from '../services/preferences';
 import { purchasesService } from '../services/purchases';
+import { GuestRecipesService } from '../services/guestRecipes';
+import { apiService } from '../services/api';
 
 async function identifyPurchaser(user: User) {
   try {
@@ -20,12 +22,36 @@ async function deidentifyPurchaser() {
   }
 }
 
+const GUEST_IMPORT_BATCH_SIZE = 100; // matches the backend's max items per /api/recipes/import call
+
+// Merge any locally-stored guest recipes into the now-signed-in account.
+// Called on both registration and login (guest history merges either way).
+// Local data is only cleared once the import call actually succeeds — a
+// flaky network should never lose a guest's recipes.
+async function migrateGuestData() {
+  try {
+    const guestRecipes = await GuestRecipesService.getAll();
+    if (guestRecipes.length === 0) return;
+
+    for (let i = 0; i < guestRecipes.length; i += GUEST_IMPORT_BATCH_SIZE) {
+      await apiService.importGuestRecipes(guestRecipes.slice(i, i + GUEST_IMPORT_BATCH_SIZE));
+    }
+
+    await GuestRecipesService.clear();
+  } catch (error) {
+    console.error('❌ Failed to migrate guest recipes:', error);
+  }
+}
+
 interface AuthContextType {
   // State
   user: User | null;
   isLoading: boolean;
   isAuthenticated: boolean;
-  
+  // True immediately after a sign-out, cleared on the next successful
+  // login/register. Drives a "you're signed out" banner (see history tab).
+  justSignedOut: boolean;
+
   // Actions
   login: (credentials: LoginCredentials) => Promise<void>;
   register: (userData: RegisterData) => Promise<void>;
@@ -39,7 +65,8 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  
+  const [justSignedOut, setJustSignedOut] = useState(false);
+
   const isAuthenticated = !!user;
 
   // Initialize authentication state on app start
@@ -94,6 +121,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // a fresh install / new device inherits the user's existing setup.
       PreferencesService.syncFromBackend().catch(() => {});
       identifyPurchaser(tokens.user);
+      migrateGuestData();
+      setJustSignedOut(false);
     } catch (error) {
       console.error('❌ Login failed in context:', error);
       throw error;
@@ -117,6 +146,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const local = await PreferencesService.loadPreferences();
         PreferencesService.saveToBackend(local).catch(() => {});
       } catch {}
+
+      migrateGuestData();
+      setJustSignedOut(false);
     } catch (error) {
       console.error('❌ Registration failed in context:', error);
       throw error;
@@ -132,6 +164,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await AuthService.logout();
       setUser(null);
       deidentifyPurchaser();
+      setJustSignedOut(true);
 
       // console.log('✅ User logged out');
 
@@ -140,6 +173,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Even if logout API fails, clear local state
       setUser(null);
       deidentifyPurchaser();
+      setJustSignedOut(true);
     } finally {
       setIsLoading(false);
     }
@@ -185,7 +219,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     user,
     isLoading,
     isAuthenticated,
-    
+    justSignedOut,
+
     // Actions
     login,
     register,

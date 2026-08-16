@@ -10,7 +10,8 @@ from ..models import User, Recipe, RecipeIngredient, SavedRecipe
 from ..schemas import (
     RecipeGenerationRequest, RecipeGenerationResponse, RecipeModificationRequest,
     RecipeIdeaGenerationRequest, RecipeIdeasResponse,
-    RecipeAPI, IngredientAPI, SavedRecipeResponse, SaveRecipeSuccessResponse, ErrorResponse
+    RecipeAPI, IngredientAPI, SavedRecipeResponse, SaveRecipeSuccessResponse, ErrorResponse,
+    RecipeImportRequest, RecipeImportResponse
 )
 from ..utils.auth import get_current_user
 from ..services.llm_service import llm_service
@@ -511,6 +512,83 @@ async def get_saved_recipes(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch saved recipes"
+        )
+
+@router.post("/import", response_model=RecipeImportResponse)
+async def import_guest_recipes(
+    request: RecipeImportRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Import locally-stored guest recipes into the authenticated user's account.
+
+    Fires on both register and login, so the account may already hold
+    matching recipes. Dedupe is a deliberately cheap "good enough, not
+    exact" heuristic (trimmed, casefolded title match) — do not "fix" this
+    into fuzzy matching, ingredient similarity, or content hashing.
+    """
+    try:
+        existing_titles = {
+            title.strip().casefold()
+            for (title,) in db.query(Recipe.title)
+            .join(SavedRecipe, Recipe.id == SavedRecipe.recipe_id)
+            .filter(SavedRecipe.user_id == current_user.id)
+            .all()
+        }
+
+        imported = 0
+        skipped = 0
+        seen_in_batch = set()
+
+        for item in request.recipes:
+            normalized_title = item.recipe.title.strip().casefold()
+
+            if normalized_title in existing_titles or normalized_title in seen_in_batch:
+                skipped += 1
+                continue
+
+            seen_in_batch.add(normalized_title)
+
+            recipe = Recipe(
+                title=item.recipe.title,
+                description=item.recipe.description or '',
+                instructions=item.recipe.instructions,
+                prep_time=item.recipe.prepTime,
+                cook_time=item.recipe.cookTime,
+                servings=item.recipe.servings or 4,
+                difficulty=item.recipe.difficulty or 'medium',
+                tips=item.recipe.tips or [],
+                original_prompt=item.userPrompt or item.recipe.title,
+                created_by_id=current_user.id,
+            )
+            db.add(recipe)
+            db.flush()
+
+            for ing in item.ingredients:
+                db.add(RecipeIngredient(
+                    recipe_id=recipe.id,
+                    name=ing.name,
+                    amount=str(ing.amount),
+                    unit=ing.unit or '',
+                    category=ing.category or 'pantry'
+                ))
+
+            db.add(SavedRecipe(user_id=current_user.id, recipe_id=recipe.id))
+            imported += 1
+
+        db.commit()
+
+        logger.info(f"Imported {imported} guest recipes for user {current_user.email} ({skipped} skipped)")
+
+        return RecipeImportResponse(imported=imported, skipped=skipped)
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error importing guest recipes: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to import recipes"
         )
 
 async def _save_recipe_to_database(
