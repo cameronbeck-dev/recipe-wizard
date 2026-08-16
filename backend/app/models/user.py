@@ -1,5 +1,7 @@
-from sqlalchemy import Column, String, Boolean, Integer, JSON, Text
+from sqlalchemy import Column, String, Boolean, Integer, BigInteger, JSON, Text, DateTime
 from sqlalchemy.orm import relationship
+from sqlalchemy.ext.hybrid import hybrid_property
+from datetime import datetime, timezone
 from .base import BaseModel
 
 class User(BaseModel):
@@ -36,7 +38,13 @@ class User(BaseModel):
     
     # UI preferences
     theme_preference = Column(String(20), default='system', nullable=False)  # 'light', 'dark', 'system'
-    
+
+    # Premium/subscription tracking (source of truth for RevenueCat entitlement state)
+    premium_expires_at = Column(DateTime(timezone=True), nullable=True)
+    revenuecat_customer_id = Column(String(255), nullable=True, index=True)
+    premium_product_id = Column(String(255), nullable=True)  # diagnostics only
+    premium_event_at_ms = Column(BigInteger, nullable=True)  # last-applied RevenueCat event timestamp
+
     # Relationships
     conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
     saved_recipes = relationship("SavedRecipe", back_populates="user", cascade="all, delete-orphan")
@@ -46,7 +54,16 @@ class User(BaseModel):
     
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}', username='{self.username}')>"
-    
+
+    @hybrid_property
+    def is_premium(self) -> bool:
+        if self.premium_expires_at is None:
+            return False
+        expires_at = self.premium_expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return expires_at > datetime.now(timezone.utc)
+
     @property
     def full_name(self):
         """Return full name or username as fallback"""

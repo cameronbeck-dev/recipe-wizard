@@ -4,12 +4,28 @@ import {
   RecipeIdeaGenerationRequest, RecipeIdeasResponse,
   SavedRecipeData, ConversationEntry, RecipeJobCreateResponse, RecipeJobStatus,
   RecipeJobResult, RecipeJobError, PaginatedConversationResponse,
-  ShoppingListResponse, AddRecipeToShoppingListRequest, UpdateShoppingListItemRequest
+  ShoppingListResponse, AddRecipeToShoppingListRequest, UpdateShoppingListItemRequest,
+  ShoppingListRecipeSummary, ClearCheckedItemsResponse, ShoppingListItemUpdateResponse,
+  AddManualItemRequest
 } from '../types/api';
 import { PreferencesService } from './preferences';
 import { SavedRecipesService } from './savedRecipes';
 import AuthService from './auth';
 import { API_BASE_URL } from './config';
+
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  data?: any;
+
+  constructor(message: string, status: number, code?: string, data?: any) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+    this.data = data;
+  }
+}
 
 class APIService {
   public baseUrl: string;  // Made public so AuthService can access it
@@ -539,76 +555,174 @@ class APIService {
   /**
    * Add a recipe to the user's shopping list
    */
-  async addRecipeToShoppingList(recipeId: string): Promise<void> {
-    try {
-      const request: AddRecipeToShoppingListRequest = {
-        recipeId
-      };
+  async addRecipeToShoppingList(recipeId: string, options?: { allowDuplicate?: boolean }): Promise<ShoppingListResponse> {
+    const request: AddRecipeToShoppingListRequest = {
+      recipeId,
+      allowDuplicate: options?.allowDuplicate,
+    };
 
-      const response = await this.makeAuthenticatedRequest(`${this.baseUrl}/api/shopping-list/add-recipe`, {
-        method: 'POST',
-        body: JSON.stringify(request),
-      });
+    const response = await this.makeAuthenticatedRequest(`${this.baseUrl}/api/shopping-list/add-recipe`, {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      // console.log('✅ Recipe added to shopping list:', recipeId);
-    } catch (error) {
-      console.error('Error adding recipe to shopping list:', error);
-      throw new Error('Failed to add recipe to shopping list. Please try again.');
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new ApiError(
+        errorData.detail || `HTTP ${response.status}: ${response.statusText}`,
+        response.status,
+        errorData.code,
+        errorData
+      );
     }
+
+    return await response.json();
+  }
+
+  /**
+   * List the recipes currently contributing to the user's shopping list
+   */
+  async getShoppingListRecipes(): Promise<ShoppingListRecipeSummary[]> {
+    const response = await this.makeAuthenticatedRequest(`${this.baseUrl}/api/shopping-list/recipes`, {
+      method: 'GET',
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new ApiError(
+        errorData.detail || `HTTP ${response.status}: ${response.statusText}`,
+        response.status,
+        errorData.code
+      );
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Delete only the checked-off items from the shopping list
+   */
+  async clearCheckedItems(): Promise<ClearCheckedItemsResponse> {
+    const response = await this.makeAuthenticatedRequest(`${this.baseUrl}/api/shopping-list/checked`, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new ApiError(
+        errorData.detail || `HTTP ${response.status}: ${response.statusText}`,
+        response.status,
+        errorData.code
+      );
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Delete a single shopping list item
+   */
+  async deleteShoppingListItem(itemId: string): Promise<ShoppingListResponse> {
+    const response = await this.makeAuthenticatedRequest(`${this.baseUrl}/api/shopping-list/items/${itemId}`, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new ApiError(
+        errorData.detail || `HTTP ${response.status}: ${response.statusText}`,
+        response.status,
+        errorData.code
+      );
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Set or clear (pass null) a manual quantity override on an item
+   */
+  async setItemQuantity(itemId: string, quantity: string | null): Promise<ShoppingListItemUpdateResponse> {
+    const response = await this.makeAuthenticatedRequest(`${this.baseUrl}/api/shopping-list/items/${itemId}/quantity`, {
+      method: 'PATCH',
+      body: JSON.stringify({ quantity }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new ApiError(
+        errorData.detail || `HTTP ${response.status}: ${response.statusText}`,
+        response.status,
+        errorData.code
+      );
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Add a manual (non-recipe) item to the shopping list
+   */
+  async addManualItem(request: AddManualItemRequest): Promise<ShoppingListItemUpdateResponse> {
+    const response = await this.makeAuthenticatedRequest(`${this.baseUrl}/api/shopping-list/items`, {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new ApiError(
+        errorData.detail || `HTTP ${response.status}: ${response.statusText}`,
+        response.status,
+        errorData.code
+      );
+    }
+
+    return await response.json();
   }
 
   /**
    * Get the user's shopping list
    */
   async getShoppingList(): Promise<ShoppingListResponse> {
-    try {
-      // Use trailing slash to avoid redirects that can drop auth headers on some platforms
-      const response = await this.makeAuthenticatedRequest(`${this.baseUrl}/api/shopping-list/`, {
-        method: 'GET',
-      });
+    // Use trailing slash to avoid redirects that can drop auth headers on some platforms
+    const response = await this.makeAuthenticatedRequest(`${this.baseUrl}/api/shopping-list/`, {
+      method: 'GET',
+    });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      return data;
-    } catch (error) {
-      console.error('Error fetching shopping list:', error);
-      throw new Error('Failed to load shopping list. Please try again.');
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new ApiError(
+        errorData.detail || `HTTP ${response.status}: ${response.statusText}`,
+        response.status,
+        errorData.code
+      );
     }
+
+    return await response.json();
   }
 
   /**
    * Update a shopping list item's checked status
    */
   async updateShoppingListItem(itemId: string, isChecked: boolean): Promise<void> {
-    try {
-      const request: UpdateShoppingListItemRequest = {
-        itemId,
-        isChecked
-      };
+    const request: UpdateShoppingListItemRequest = {
+      itemId,
+      isChecked
+    };
 
-      const response = await this.makeAuthenticatedRequest(`${this.baseUrl}/api/shopping-list/items/${itemId}`, {
-        method: 'PUT',
-        body: JSON.stringify(request),
-      });
+    const response = await this.makeAuthenticatedRequest(`${this.baseUrl}/api/shopping-list/items/${itemId}`, {
+      method: 'PUT',
+      body: JSON.stringify(request),
+    });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      // console.log('✅ Shopping list item updated:', itemId, isChecked);
-    } catch (error) {
-      console.error('Error updating shopping list item:', error);
-      throw new Error('Failed to update shopping list item. Please try again.');
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new ApiError(
+        errorData.detail || `HTTP ${response.status}: ${response.statusText}`,
+        response.status,
+        errorData.code
+      );
     }
   }
 
@@ -616,20 +730,17 @@ class APIService {
    * Clear all items from the shopping list
    */
   async clearShoppingList(): Promise<void> {
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.baseUrl}/api/shopping-list/clear`, {
-        method: 'DELETE',
-      });
+    const response = await this.makeAuthenticatedRequest(`${this.baseUrl}/api/shopping-list/clear`, {
+      method: 'DELETE',
+    });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      // console.log('✅ Shopping list cleared');
-    } catch (error) {
-      console.error('Error clearing shopping list:', error);
-      throw new Error('Failed to clear shopping list. Please try again.');
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new ApiError(
+        errorData.detail || `HTTP ${response.status}: ${response.statusText}`,
+        response.status,
+        errorData.code
+      );
     }
   }
 }

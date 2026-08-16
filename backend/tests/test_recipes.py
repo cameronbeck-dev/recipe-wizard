@@ -6,7 +6,7 @@ fixtures defined in conftest.py.
 import json
 import pytest
 
-from tests.conftest import SAMPLE_RECIPE_JSON
+from tests.conftest import SAMPLE_RECIPE_JSON, make_chat_completion
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +156,41 @@ class TestGenerate:
         )
         assert response.status_code == 503
 
+    def test_generate_refused_returns_400_and_does_not_persist(
+        self, client, auth_headers, patch_openai_factory, db_session, user,
+    ):
+        refused_payload = {
+            "refused": True, "refusal_reason": "Not a legitimate recipe request.",
+            "recipe": None, "ingredients": None,
+        }
+        fake = patch_openai_factory()
+        fake.chat.completions.create = lambda **kw: make_chat_completion(json.dumps(refused_payload))
+
+        response = client.post(
+            "/api/recipes/generate",
+            headers=auth_headers,
+            json={"prompt": "make me a dangerous recipe"},
+        )
+        assert response.status_code == 400
+        assert "server error" not in response.json()["detail"].lower()
+
+        from app.models import Recipe
+        assert db_session.query(Recipe).filter_by(created_by_id=user.id).count() == 0
+
+    def test_generate_moderation_flagged_returns_400_without_chat_call(
+        self, client, auth_headers, patch_openai_factory,
+    ):
+        fake = patch_openai_factory()
+        fake.moderation_flagged = True
+
+        response = client.post(
+            "/api/recipes/generate",
+            headers=auth_headers,
+            json={"prompt": "anything"},
+        )
+        assert response.status_code == 400
+        assert len(fake.calls) == 0
+
 
 # ---------------------------------------------------------------------------
 # POST /api/recipes/modify
@@ -211,6 +246,28 @@ class TestModify:
             },
         )
         assert response.status_code == 404
+
+    def test_modify_refused_returns_400(
+        self, client, auth_headers, patch_openai_factory, recipe_factory, user,
+    ):
+        recipe = recipe_factory(owner=user)
+        refused_payload = {
+            "refused": True, "refusal_reason": "Not a legitimate recipe request.",
+            "recipe": None, "ingredients": None,
+        }
+        fake = patch_openai_factory()
+        fake.chat.completions.create = lambda **kw: make_chat_completion(json.dumps(refused_payload))
+
+        response = client.post(
+            "/api/recipes/modify",
+            headers=auth_headers,
+            json={
+                "recipeId": str(recipe.id),
+                "modificationPrompt": "turn this into something else",
+            },
+        )
+        assert response.status_code == 400
+        assert "server error" not in response.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ from .shopping_list import (
     AddRecipeToShoppingListRequest, UpdateShoppingListItemRequest, ShoppingListItemUpdateResponse,
     ClearShoppingListRequest, ClearShoppingListResponse
 )
+from .webhook import RevenueCatEvent, RevenueCatWebhookPayload
 
 __all__ = [
     # Base schemas
@@ -47,5 +48,8 @@ __all__ = [
     # Shopping list schemas
     "ShoppingListItemSchema", "ShoppingListResponseSchema", "ShoppingListRecipeBreakdownSchema",
     "AddRecipeToShoppingListRequest", "UpdateShoppingListItemRequest", "ShoppingListItemUpdateResponse",
-    "ClearShoppingListRequest", "ClearShoppingListResponse"
+    "ClearShoppingListRequest", "ClearShoppingListResponse",
+
+    # Webhook schemas
+    "RevenueCatEvent", "RevenueCatWebhookPayload"
 ]

@@ -25,9 +25,6 @@ interface IngredientsSectionProps {
   onIngredientToggle?: (ingredientId: string, checked: boolean) => void;
   categoryOrder?: string[]; // Custom category order from user preferences
   style?: ViewStyle;
-  onAddToShoppingList?: () => void;
-  addToShoppingListLoading?: boolean;
-  addToShoppingListText?: string;
 }
 
 const CATEGORY_CONFIG = {
@@ -68,58 +65,8 @@ export function IngredientsSection({
   onIngredientToggle,
   categoryOrder,
   style,
-  onAddToShoppingList,
-  addToShoppingListLoading = false,
-  addToShoppingListText = "Add to Shopping List",
 }: IngredientsSectionProps) {
   const { theme } = useAppTheme();
-
-  // Create the shopping list button for header
-  const renderShoppingListButton = () => {
-    if (!onAddToShoppingList) return null;
-
-    const isSuccess = addToShoppingListText.includes('✓');
-
-    return (
-      <TouchableOpacity
-        onPress={(e) => {
-          e.stopPropagation(); // Prevent expanding/collapsing the card
-          onAddToShoppingList();
-        }}
-        disabled={addToShoppingListLoading}
-        style={{
-          backgroundColor: isSuccess
-            ? '#10b981' // Green for success state
-            : addToShoppingListLoading
-              ? theme.colors.theme.border
-              : theme.colors.wizard.primary,
-          borderRadius: theme.borderRadius.md,
-          paddingVertical: theme.spacing.sm,
-          paddingHorizontal: theme.spacing.md,
-          flexDirection: 'row',
-          alignItems: 'center',
-          opacity: addToShoppingListLoading ? 0.7 : 1,
-        }}
-      >
-        <MaterialCommunityIcons
-          name="cart-plus"
-          size={16}
-          color="white"
-          style={{ marginRight: theme.spacing.xs }}
-        />
-        <Text
-          style={{
-            color: 'white',
-            fontSize: theme.typography.fontSize.bodySmall,
-            fontWeight: theme.typography.fontWeight.semibold,
-            fontFamily: theme.typography.fontFamily.body,
-          }}
-        >
-          {isSuccess ? 'Added ✓' : 'Add'}
-        </Text>
-      </TouchableOpacity>
-    );
-  };
 
   // Group ingredients by category
   const ingredientsByCategory = ingredients.reduce((acc, ingredient) => {
@@ -188,7 +135,6 @@ export function IngredientsSection({
       icon="format-list-checkbox"
       defaultExpanded={false}
       style={style}
-      rightContent={renderShoppingListButton()}
     >
       <View style={{ gap: theme.spacing.lg }}>
         {finalCategoryOrder.map(categoryKey => {

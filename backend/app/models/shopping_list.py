@@ -40,7 +40,7 @@ class ShoppingListItem(BaseModel):
     ingredient_name = Column(String(255), nullable=False, index=True)
     category = Column(String(100), nullable=False, index=True)
 
-    # Consolidated display (e.g., "2 whole + 1 cup")
+    # Consolidated display (e.g., "2 whole + 1 cup") — the raw auto-computed value
     consolidated_display = Column(String(200), nullable=False)
 
     # User interaction
@@ -48,6 +48,16 @@ class ShoppingListItem(BaseModel):
 
     # Metadata
     consolidation_metadata = Column(JSON, nullable=True)  # Store consolidation logic details
+
+    # Where this item originated: "recipe" or "manual"
+    source = Column(String(20), nullable=False, server_default="recipe")
+
+    # User-entered quantity that overrides the auto-computed display
+    user_quantity_override = Column(String(200), nullable=True)
+
+    # Snapshot of the auto-computed display at the moment the override was set,
+    # used to detect staleness when new recipe contributions change the auto value
+    override_baseline_display = Column(String(200), nullable=True)
 
     # Relationships
     shopping_list = relationship("ShoppingList", back_populates="items")
@@ -58,11 +68,21 @@ class ShoppingListItem(BaseModel):
 
     def to_api_format(self):
         """Convert to API format matching mobile app expectations"""
+        auto_display = self.consolidated_display
+        effective_display = self.user_quantity_override if self.user_quantity_override else auto_display
+        override_is_stale = (
+            self.user_quantity_override is not None
+            and self.override_baseline_display != auto_display
+        )
         return {
             "id": str(self.id),
             "ingredientName": self.ingredient_name,
             "category": self.category,
-            "consolidatedDisplay": self.consolidated_display,
+            "consolidatedDisplay": effective_display,
+            "autoConsolidatedDisplay": auto_display,
+            "source": self.source,
+            "userQuantityOverride": self.user_quantity_override,
+            "overrideIsStale": override_is_stale,
             "recipeBreakdown": [breakdown.to_api_format() for breakdown in self.recipe_breakdowns],
             "isChecked": self.is_checked
         }

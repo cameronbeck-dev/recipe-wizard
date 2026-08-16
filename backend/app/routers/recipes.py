@@ -14,6 +14,7 @@ from ..schemas import (
 )
 from ..utils.auth import get_current_user
 from ..services.llm_service import llm_service
+from ..services.openai_service import RecipeRequestRefused
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -79,6 +80,12 @@ async def generate_recipe(
         logger.error(f"LLM service connection error: {e}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e)
+        )
+    except RecipeRequestRefused as e:
+        logger.warning(f"Recipe generation refused: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except ValueError as e:
@@ -183,6 +190,12 @@ async def modify_recipe(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(e)
         )
+    except RecipeRequestRefused as e:
+        logger.warning(f"Recipe modification refused: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except ValueError as e:
         logger.error(f"Recipe modification validation error: {e}")
         raise HTTPException(
@@ -226,6 +239,12 @@ async def generate_recipe_ideas(
         logger.error(f"LLM service connection error: {e}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e)
+        )
+    except RecipeRequestRefused as e:
+        logger.warning(f"Recipe ideas generation refused: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except ValueError as e:

@@ -2,6 +2,23 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import AuthService, { User, LoginCredentials, RegisterData, AuthTokens } from '../services/auth';
 import { PreferencesService } from '../services/preferences';
+import { purchasesService } from '../services/purchases';
+
+async function identifyPurchaser(user: User) {
+  try {
+    await purchasesService.setUserID(String(user.id));
+  } catch (error) {
+    console.error('❌ Failed to identify RevenueCat user:', error);
+  }
+}
+
+async function deidentifyPurchaser() {
+  try {
+    await purchasesService.logout();
+  } catch (error) {
+    console.error('❌ Failed to log out RevenueCat user:', error);
+  }
+}
 
 interface AuthContextType {
   // State
@@ -44,6 +61,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (validUser) {
           setUser(validUser);
           PreferencesService.syncFromBackend().catch(() => {});
+          identifyPurchaser(validUser);
         } else {
           // Tokens invalid, try refresh
           const refreshResult = await AuthService.refreshToken();
@@ -51,6 +69,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (refreshResult) {
             setUser(refreshResult.user);
             PreferencesService.syncFromBackend().catch(() => {});
+            identifyPurchaser(refreshResult.user);
           }
         }
       } else {
@@ -74,6 +93,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Pull server-side preferences (allergens, dietary, grocery categories) so
       // a fresh install / new device inherits the user's existing setup.
       PreferencesService.syncFromBackend().catch(() => {});
+      identifyPurchaser(tokens.user);
     } catch (error) {
       console.error('❌ Login failed in context:', error);
       throw error;
@@ -88,6 +108,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const tokens = await AuthService.register(userData);
       setUser(tokens.user);
+      identifyPurchaser(tokens.user);
 
       // Push any preferences the user configured before signing up so they
       // survive reinstall. If there's no local data yet this is a no-op on
@@ -110,13 +131,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       
       await AuthService.logout();
       setUser(null);
-      
+      deidentifyPurchaser();
+
       // console.log('✅ User logged out');
-      
+
     } catch (error) {
       console.error('❌ Logout failed in context:', error);
       // Even if logout API fails, clear local state
       setUser(null);
+      deidentifyPurchaser();
     } finally {
       setIsLoading(false);
     }
@@ -127,6 +150,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(true);
       await AuthService.deleteAccount();
       setUser(null);
+      deidentifyPurchaser();
     } catch (error) {
       console.error('❌ Account deletion failed:', error);
       throw error;
@@ -141,15 +165,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       
       if (refreshResult) {
         setUser(refreshResult.user);
+        identifyPurchaser(refreshResult.user);
         // console.log('✅ Auth refreshed in context');
       } else {
         setUser(null);
+        deidentifyPurchaser();
         // console.log('❌ Auth refresh failed, user logged out');
       }
-      
+
     } catch (error) {
       console.error('❌ Auth refresh error:', error);
       setUser(null);
+      deidentifyPurchaser();
     }
   };
 

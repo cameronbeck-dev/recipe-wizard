@@ -160,7 +160,8 @@ class LLMService:
         return await self.openai_service.generate_recipe_ideas(
             request.prompt,
             request.count,
-            user_preferences
+            user_preferences,
+            user=user
         )
 
 # Global LLM service instance

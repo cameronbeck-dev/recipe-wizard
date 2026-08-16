@@ -44,7 +44,7 @@ Recipe Wizard is a cross-platform mobile application that generates personalized
 - **PostgreSQL** - Robust relational database with migrations
 - **SQLAlchemy** - Python SQL toolkit and ORM
 - **Alembic** - Database migration tool (migrations implemented)
-- **OpenAI API** - AI recipe generation via configurable model (`DEFAULT_MODEL`)
+- **OpenAI API** - AI recipe generation via two-tier configurable models (`DEFAULT_MODEL_FREE` / `DEFAULT_MODEL_PAID`), selected per-request by subscription status
 - **JWT** - Secure authentication system with token refresh
 - **Pydantic** - Data validation and serialization
 - **Rate Limiting** - Redis-based request throttling
@@ -116,7 +116,8 @@ Recipe Wizard is a cross-platform mobile application that generates personalized
 
    # OpenAI Integration (REQUIRED)
    OPENAI_API_KEY=your-openai-api-key-here
-   DEFAULT_MODEL=gpt-4o-mini
+   DEFAULT_MODEL_FREE=gpt-5.6-luna
+DEFAULT_MODEL_PAID=gpt-5.6-terra
 
    # Optional: Rate Limiting
    REDIS_URL=redis://localhost:6379
@@ -351,7 +352,8 @@ ACCESS_TOKEN_EXPIRE_MINUTES=30
 
 # OpenAI Integration
 OPENAI_API_KEY=your-openai-api-key-here
-DEFAULT_MODEL=gpt-4o-mini
+DEFAULT_MODEL_FREE=gpt-5.6-luna
+DEFAULT_MODEL_PAID=gpt-5.6-terra
 
 # API Configuration
 API_HOST=0.0.0.0

@@ -1,13 +1,25 @@
 import { Stack } from 'expo-router';
 import { Provider as PaperProvider } from 'react-native-paper';
-import { ThemeProvider } from '../constants/ThemeProvider';
+import { ThemeProvider, usePaperTheme } from '../constants/ThemeProvider';
+import { ToastProvider } from '../contexts/ToastContext';
 import { AuthProvider } from '../contexts/AuthContext';
 import { PremiumProvider } from '../contexts/PremiumContext';
 
+function ThemedPaperProvider({ children }: { children: React.ReactNode }) {
+  const paperTheme = usePaperTheme();
+  return (
+    <PaperProvider theme={paperTheme}>
+      <ToastProvider>
+        {children}
+      </ToastProvider>
+    </PaperProvider>
+  );
+}
+
 export default function RootLayout() {
   return (
-    <PaperProvider>
-      <ThemeProvider>
+    <ThemeProvider>
+      <ThemedPaperProvider>
         <PremiumProvider>
           <AuthProvider>
             <Stack>
@@ -26,7 +38,7 @@ export default function RootLayout() {
             </Stack>
           </AuthProvider>
         </PremiumProvider>
-      </ThemeProvider>
-    </PaperProvider>
+      </ThemedPaperProvider>
+    </ThemeProvider>
   );
 }

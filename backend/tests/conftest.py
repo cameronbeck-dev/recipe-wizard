@@ -25,10 +25,18 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production-use-only
 os.environ.setdefault("ALGORITHM", "HS256")
 os.environ.setdefault("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
 os.environ.setdefault("OPENAI_API_KEY", "sk-test-fake-key")
-os.environ.setdefault("DEFAULT_MODEL", "gpt-4o-mini")
+os.environ.setdefault("DEFAULT_MODEL_FREE", "gpt-5.6-luna")
+os.environ.setdefault("DEFAULT_MODEL_PAID", "gpt-5.6-terra")
+# Hard-clear (not setdefault): a developer's local backend/.env may set a real
+# DEFAULT_MODEL for local runs. openai_service.py calls load_dotenv() at import
+# time, and dotenv never overrides an already-present env var — pre-setting
+# this to "" keeps tests hermetic regardless of local .env contents.
+os.environ["DEFAULT_MODEL"] = ""
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("ENVIRONMENT", "development")
 os.environ.setdefault("ENABLE_RATE_LIMIT", "false")
+os.environ.setdefault("REVENUECAT_WEBHOOK_SECRET", "test-webhook-secret")
+os.environ.setdefault("REVENUECAT_ALLOW_SANDBOX", "true")
 os.environ.pop("REDIS_URL", None)
 os.environ.pop("ALLOWED_ORIGINS", None)
 
@@ -225,10 +233,22 @@ def recipe_factory(db_session) -> Callable[..., Recipe]:
 # ---------------------------------------------------------------------------
 # OpenAI mocking
 # ---------------------------------------------------------------------------
-def make_chat_completion(content: str, prompt_tokens: int = 100, completion_tokens: int = 200):
-    """Build a SimpleNamespace shaped like an openai ChatCompletion response."""
+def make_chat_completion(
+    content: Optional[str] = None,
+    prompt_tokens: int = 100,
+    completion_tokens: int = 200,
+    refusal: Optional[str] = None,
+):
+    """Build a SimpleNamespace shaped like an openai ChatCompletion response.
+
+    Pass `refusal` to simulate the SDK-native refusal channel — `content`
+    will be `None` and `message.refusal` will carry the refusal text.
+    """
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content=None if refusal else content,
+            refusal=refusal,
+        ))],
         usage=SimpleNamespace(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -274,14 +294,21 @@ class FakeOpenAIClient:
         self.recipe_payload = recipe_payload if recipe_payload is not None else SAMPLE_RECIPE_JSON
         self.ideas_payload = ideas_payload if ideas_payload is not None else SAMPLE_IDEAS_JSON
         self.calls: List[Dict[str, Any]] = []
+        self.moderation_calls: List[Dict[str, Any]] = []
+        self.moderation_flagged = False
 
         chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat))
         self.chat = chat
+        self.moderations = SimpleNamespace(create=self._create_moderation)
 
         # `models.list()` is used by check_openai_connection
         self.models = SimpleNamespace(list=lambda: SimpleNamespace(
             data=[SimpleNamespace(id="gpt-4o-mini"), SimpleNamespace(id="gpt-4o")]
         ))
+
+    def _create_moderation(self, **kwargs):
+        self.moderation_calls.append(kwargs)
+        return SimpleNamespace(results=[SimpleNamespace(flagged=self.moderation_flagged)])
 
     def _create_chat(self, **kwargs):
         self.calls.append(kwargs)

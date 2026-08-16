@@ -21,12 +21,13 @@ import { ExpandableCard } from '../components/ExpandableCard';
 import { TextInput } from '../components/TextInput';
 import { Button } from '../components/Button';
 import { RecipeGenerationResponse } from '../types/api';
-import { apiService } from '../services/api';
+import { apiService, ApiError } from '../services/api';
 import { PreferencesService } from '../services/preferences';
 import { getRandomLoadingButtonText } from '../constants/copy';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { PremiumFeature } from '../components/PremiumFeature';
 import { usePremium, PREMIUM_FEATURES } from '../contexts/PremiumContext';
+import { useToast } from '../contexts/ToastContext';
 
 
 export default function RecipeResultScreen() {
@@ -36,6 +37,7 @@ export default function RecipeResultScreen() {
   const params = useLocalSearchParams();
   const { isOnline } = useNetworkStatus();
   const { isPremium, checkPremiumFeature } = usePremium();
+  const toast = useToast();
 
   const [recipeData, setRecipeData] = useState<RecipeGenerationResponse | null>(null);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
@@ -48,8 +50,8 @@ export default function RecipeResultScreen() {
 
   // Shopping list state
   const [isAddingToShoppingList, setIsAddingToShoppingList] = useState(false);
-  const [addToShoppingListText, setAddToShoppingListText] = useState('Add to Shopping List');
-  
+  const [alreadyInShoppingList, setAlreadyInShoppingList] = useState(false);
+
   // Progress visualization state for modification
   const [modifyCurrentAttempt, setModifyCurrentAttempt] = useState(1);
   const [modifySegmentProgress, setModifySegmentProgress] = useState(0);
@@ -128,6 +130,21 @@ export default function RecipeResultScreen() {
     
     checkSavedStatus();
   }, [recipeData?.id]);
+
+  // Check whether this recipe is already in the user's shopping list
+  useEffect(() => {
+    const checkAlreadyInList = async () => {
+      if (!isPremium || !recipeData?.id || !isOnline) return;
+      try {
+        const recipes = await apiService.getShoppingListRecipes();
+        setAlreadyInShoppingList(recipes.some(r => r.recipeId === recipeData.id));
+      } catch (error) {
+        console.error('Error checking shopping list recipes:', error);
+      }
+    };
+
+    checkAlreadyInList();
+  }, [isPremium, recipeData?.id, isOnline]);
 
   // Modification progress visualization logic
   
@@ -234,44 +251,55 @@ export default function RecipeResultScreen() {
     }
   };
 
-  const handleAddToShoppingList = async () => {
+  const handleAddToShoppingList = async (allowDuplicate: boolean = false) => {
     if (!recipeData) return;
 
     // Check network connectivity
     if (!isOnline) {
-      Alert.alert(
-        'No Internet Connection',
-        'Please connect to the internet to add recipes to your shopping list.',
-        [{ text: 'OK' }]
-      );
+      toast.show('Please connect to the internet to add recipes to your shopping list.', {
+        variant: 'error',
+      });
       return;
     }
 
     try {
       setIsAddingToShoppingList(true);
-      setAddToShoppingListText('Adding...');
 
-      await apiService.addRecipeToShoppingList(recipeData.id);
+      const result = await apiService.addRecipeToShoppingList(recipeData.id, { allowDuplicate });
 
-      // Show success state
-      setAddToShoppingListText('Added to Shopping List ✓');
+      setIsAddingToShoppingList(false);
+      setAlreadyInShoppingList(true);
 
-      // Reset after 5 seconds
-      setTimeout(() => {
-        setAddToShoppingListText('Add to Shopping List');
-        setIsAddingToShoppingList(false);
-      }, 5000);
+      const ingredientCount = recipeData.ingredients?.length || 0;
+      toast.show(`Added ${ingredientCount} ingredients to your shopping list`, {
+        variant: 'success',
+        actionLabel: 'View',
+        onAction: () => router.push('/(tabs)/shopping-list'),
+      });
 
     } catch (error) {
-      console.error('Failed to add to shopping list:', error);
       setIsAddingToShoppingList(false);
-      setAddToShoppingListText('Add to Shopping List');
 
-      Alert.alert(
-        'Error',
-        'Failed to add recipe to shopping list. Please try again.',
-        [{ text: 'OK' }]
-      );
+      if (error instanceof ApiError && error.status === 409) {
+        const addedAt = error.data?.addedAt;
+        const addedAtLabel = addedAt ? new Date(addedAt).toLocaleDateString() : 'previously';
+        Alert.alert(
+          'Already in your list',
+          `This recipe was already added on ${addedAtLabel}. Add again and quantities will be combined?`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Add Again', onPress: () => handleAddToShoppingList(true) },
+          ]
+        );
+        return;
+      }
+
+      console.error('Failed to add to shopping list:', error);
+      toast.show('Failed to add recipe to shopping list.', {
+        variant: 'error',
+        actionLabel: 'Retry',
+        onAction: () => handleAddToShoppingList(allowDuplicate),
+      });
     }
   };
 
@@ -501,6 +529,40 @@ export default function RecipeResultScreen() {
             </View>
           </View>
 
+          {/* Sticky Add to Shopping List bar */}
+          {isPremium && (
+            <View
+              style={{
+                paddingHorizontal: theme.spacing.xl,
+                paddingBottom: theme.spacing.lg,
+              }}
+            >
+              <Button
+                variant="primary"
+                size="large"
+                fullWidth
+                leftIcon="cart-plus"
+                loading={isAddingToShoppingList}
+                onPress={() => handleAddToShoppingList(false)}
+              >
+                {alreadyInShoppingList ? 'Add Again' : 'Add to Shopping List'}
+              </Button>
+              {alreadyInShoppingList && (
+                <Text
+                  style={{
+                    marginTop: theme.spacing.xs,
+                    fontSize: theme.typography.fontSize.bodySmall,
+                    color: theme.colors.theme.textSecondary,
+                    fontFamily: theme.typography.fontFamily.body,
+                    textAlign: 'center',
+                  }}
+                >
+                  Already in your list
+                </Text>
+              )}
+            </View>
+          )}
+
           {/* Content */}
           <ScrollView
             style={{ flex: 1 }}
@@ -517,9 +579,6 @@ export default function RecipeResultScreen() {
             ingredients={ingredients}
             onIngredientToggle={handleIngredientToggle}
             categoryOrder={categoryOrder}
-            onAddToShoppingList={isPremium ? handleAddToShoppingList : undefined}
-            addToShoppingListLoading={isPremium ? isAddingToShoppingList : false}
-            addToShoppingListText={isPremium ? addToShoppingListText : undefined}
           />
 
           {/* Recipe Section */}

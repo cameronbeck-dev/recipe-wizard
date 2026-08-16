@@ -12,8 +12,19 @@ from ..schemas.shopping_list import (
     ShoppingListResponseSchema, AddRecipeToShoppingListRequest,
     UpdateShoppingListItemRequest, ClearShoppingListRequest
 )
+from . import unit_conversion
 
 logger = logging.getLogger(__name__)
+
+
+class RecipeAlreadyInListError(ValueError):
+    """Raised when a recipe is already in the shopping list and duplicates aren't allowed"""
+
+    def __init__(self, recipe_id: int, added_at):
+        self.recipe_id = recipe_id
+        self.added_at = added_at
+        super().__init__(f"Recipe {recipe_id} is already in the shopping list")
+
 
 class ShoppingListService:
     """Service for managing shopping lists and ingredient consolidation"""
@@ -42,10 +53,15 @@ class ShoppingListService:
 
         return shopping_list
 
+    def _get_unit_system(self, user_id: int) -> str:
+        user = self.db.query(User).filter(User.id == user_id).first()
+        return user.units if user and user.units else 'metric'
+
     def add_recipe_to_shopping_list(
         self,
         user_id: int,
-        recipe_id: int
+        recipe_id: int,
+        allow_duplicate: bool = False
     ) -> ShoppingListResponseSchema:
         """Add a recipe's ingredients to the shopping list"""
 
@@ -57,9 +73,19 @@ class ShoppingListService:
         # Get or create shopping list
         shopping_list = self.get_or_create_shopping_list(user_id)
 
-        # Allow adding the same recipe multiple times; do not block duplicates
+        if not allow_duplicate:
+            existing_association = self.db.query(ShoppingListRecipeAssociation).filter(
+                and_(
+                    ShoppingListRecipeAssociation.shopping_list_id == shopping_list.id,
+                    ShoppingListRecipeAssociation.recipe_id == recipe_id
+                )
+            ).first()
+            if existing_association:
+                raise RecipeAlreadyInListError(recipe_id, existing_association.added_at)
 
-        # Track that this recipe was added (duplicates allowed)
+        unit_system = self._get_unit_system(user_id)
+
+        # Track that this recipe was added
         recipe_association = ShoppingListRecipeAssociation(
             shopping_list_id=shopping_list.id,
             recipe_id=recipe_id
@@ -69,7 +95,7 @@ class ShoppingListService:
         # Add ingredients to shopping list
         for ingredient in recipe.ingredients:
             self._add_ingredient_to_shopping_list(
-                shopping_list, recipe, ingredient
+                shopping_list, recipe, ingredient, unit_system
             )
 
         self.db.commit()
@@ -79,7 +105,8 @@ class ShoppingListService:
         self,
         shopping_list: ShoppingList,
         recipe: Recipe,
-        ingredient: RecipeIngredient
+        ingredient: RecipeIngredient,
+        unit_system: str
     ):
         """Add or update an ingredient in the shopping list"""
 
@@ -94,7 +121,7 @@ class ShoppingListService:
 
         if existing_item:
             # Add to existing item
-            self._add_to_existing_item(existing_item, recipe, ingredient)
+            self._add_to_existing_item(existing_item, recipe, ingredient, unit_system)
         else:
             # Create new item
             self._create_new_shopping_item(shopping_list, recipe, ingredient)
@@ -103,7 +130,8 @@ class ShoppingListService:
         self,
         existing_item: ShoppingListItem,
         recipe: Recipe,
-        ingredient: RecipeIngredient
+        ingredient: RecipeIngredient,
+        unit_system: str
     ):
         """Add ingredient quantity to existing shopping list item"""
 
@@ -122,7 +150,7 @@ class ShoppingListService:
         self.db.refresh(existing_item)
 
         # Recalculate consolidated display
-        existing_item.consolidated_display = self._calculate_consolidated_display(existing_item)
+        existing_item.consolidated_display = self._calculate_consolidated_display(existing_item, unit_system)
 
     def _create_new_shopping_item(
         self,
@@ -139,7 +167,8 @@ class ShoppingListService:
             ingredient_name=ingredient.name,
             category=ingredient.category,
             consolidated_display=consolidated_display,
-            is_checked=False
+            is_checked=False,
+            source="recipe"
         )
         self.db.add(item)
         self.db.flush()  # Get the item ID
@@ -168,64 +197,23 @@ class ShoppingListService:
         else:
             return f"{amount} {unit}".strip()
 
-    def _calculate_consolidated_display(self, item: ShoppingListItem) -> str:
+    def _calculate_consolidated_display(self, item: ShoppingListItem, unit_system: str) -> str:
         """Calculate consolidated display for an item with multiple recipe sources"""
-        # This is a simplified version - you might want more sophisticated consolidation
-        breakdowns = item.recipe_breakdowns
+        quantities = [breakdown.quantity for breakdown in item.recipe_breakdowns]
 
-        if len(breakdowns) == 1:
-            return breakdowns[0].quantity
+        manual_quantity = None
+        if item.consolidation_metadata:
+            manual_quantity = item.consolidation_metadata.get("manual_quantity")
+        if manual_quantity:
+            quantities.append(manual_quantity)
 
-        # For multiple sources, show total if possible, otherwise list all
-        quantities = []
-        total_numeric = 0
-        has_numeric = True
-        common_unit = None
+        if not quantities:
+            return ""
 
-        for breakdown in breakdowns:
-            quantities.append(breakdown.quantity)
+        if len(quantities) == 1:
+            return quantities[0]
 
-            # Try to sum numeric quantities with same units
-            try:
-                # Skip N/A quantities and descriptive amounts
-                if not breakdown.quantity or any(word in breakdown.quantity.lower() for word in ['pinch', 'to taste', 'handful', 'dash', 'splash']):
-                    has_numeric = False
-                    continue
-
-                parts = breakdown.quantity.split()
-                if len(parts) >= 1:
-                    num_part = parts[0]
-                    unit_part = ' '.join(parts[1:]) if len(parts) > 1 else ''
-
-                    if common_unit is None:
-                        common_unit = unit_part
-                    elif common_unit != unit_part:
-                        has_numeric = False
-                        continue
-
-                    if '/' in num_part:
-                        # Handle simple fractions like "1/2", "3/4"
-                        parts = num_part.split('/')
-                        if len(parts) == 2:
-                            num = float(parts[0]) / float(parts[1])
-                        else:
-                            has_numeric = False
-                            continue
-                    else:
-                        num = float(num_part)
-                    total_numeric += num
-            except (ValueError, ZeroDivisionError):
-                has_numeric = False
-
-        if has_numeric and len(breakdowns) > 1:
-            # Show consolidated total
-            if total_numeric == int(total_numeric):
-                return f"{int(total_numeric)} {common_unit}".strip()
-            else:
-                return f"{total_numeric:.2f} {common_unit}".strip().rstrip('0').rstrip('.')
-        else:
-            # Show breakdown
-            return " + ".join(quantities)
+        return unit_conversion.sum_quantities(quantities, unit_system)
 
     def get_shopping_list(self, user_id: int) -> ShoppingListResponseSchema:
         """Get user's shopping list"""
@@ -264,6 +252,179 @@ class ShoppingListService:
 
         return item
 
+    def _get_owned_item(self, user_id: int, item_id: int) -> ShoppingListItem:
+        item = self.db.query(ShoppingListItem).join(ShoppingList).filter(
+            and_(
+                ShoppingListItem.id == item_id,
+                ShoppingList.user_id == user_id
+            )
+        ).first()
+
+        if not item:
+            raise ValueError(f"Shopping list item {item_id} not found for user {user_id}")
+
+        return item
+
+    def set_item_quantity(
+        self,
+        user_id: int,
+        item_id: int,
+        quantity: Optional[str]
+    ) -> ShoppingListItem:
+        """Set or clear a manual quantity override on an item"""
+
+        item = self._get_owned_item(user_id, item_id)
+
+        if quantity is None:
+            item.user_quantity_override = None
+            item.override_baseline_display = None
+        else:
+            item.user_quantity_override = quantity
+            item.override_baseline_display = item.consolidated_display
+
+        self.db.commit()
+        self.db.refresh(item)
+
+        return item
+
+    def delete_item(self, user_id: int, item_id: int) -> ShoppingListResponseSchema:
+        """Delete a single shopping list item"""
+
+        item = self._get_owned_item(user_id, item_id)
+        shopping_list = item.shopping_list
+
+        recipe_ids = {b.recipe_id for b in item.recipe_breakdowns}
+
+        # cascade="all, delete-orphan" on recipe_breakdowns handles the FK cleanup
+        self.db.delete(item)
+        self.db.flush()
+
+        self._prune_associations(shopping_list.id, recipe_ids)
+
+        self.db.commit()
+        self.db.refresh(shopping_list)
+
+        return self._get_shopping_list_response(shopping_list)
+
+    def _prune_associations(self, shopping_list_id: int, recipe_ids):
+        """Delete recipe associations that no longer have any breakdowns"""
+        for recipe_id in recipe_ids:
+            remaining = self.db.query(ShoppingListRecipeBreakdown).join(ShoppingListItem).filter(
+                and_(
+                    ShoppingListItem.shopping_list_id == shopping_list_id,
+                    ShoppingListRecipeBreakdown.recipe_id == recipe_id
+                )
+            ).count()
+            if remaining == 0:
+                self.db.query(ShoppingListRecipeAssociation).filter(
+                    and_(
+                        ShoppingListRecipeAssociation.shopping_list_id == shopping_list_id,
+                        ShoppingListRecipeAssociation.recipe_id == recipe_id
+                    )
+                ).delete(synchronize_session=False)
+
+    def clear_checked_items(self, user_id: int) -> Tuple[int, ShoppingListResponseSchema]:
+        """Delete only the checked items from the user's shopping list"""
+
+        shopping_list = self.get_or_create_shopping_list(user_id)
+
+        checked_items = self.db.query(ShoppingListItem).filter(
+            and_(
+                ShoppingListItem.shopping_list_id == shopping_list.id,
+                ShoppingListItem.is_checked == True
+            )
+        ).all()
+
+        removed_count = len(checked_items)
+        recipe_ids = set()
+        item_ids = []
+        for item in checked_items:
+            recipe_ids.update(b.recipe_id for b in item.recipe_breakdowns)
+            item_ids.append(item.id)
+
+        if item_ids:
+            self.db.query(ShoppingListRecipeBreakdown).filter(
+                ShoppingListRecipeBreakdown.shopping_item_id.in_(item_ids)
+            ).delete(synchronize_session=False)
+
+            self.db.query(ShoppingListItem).filter(
+                ShoppingListItem.id.in_(item_ids)
+            ).delete(synchronize_session=False)
+
+        self.db.flush()
+        self._prune_associations(shopping_list.id, recipe_ids)
+
+        self.db.commit()
+        self.db.refresh(shopping_list)
+
+        return removed_count, self._get_shopping_list_response(shopping_list)
+
+    def add_manual_item(
+        self,
+        user_id: int,
+        ingredient_name: str,
+        quantity: Optional[str],
+        category: Optional[str]
+    ) -> ShoppingListItem:
+        """Add (or merge into) a manual shopping list item"""
+
+        shopping_list = self.get_or_create_shopping_list(user_id)
+        category = category or "pantry"
+        unit_system = self._get_unit_system(user_id)
+
+        existing_item = self.db.query(ShoppingListItem).filter(
+            and_(
+                ShoppingListItem.shopping_list_id == shopping_list.id,
+                ShoppingListItem.ingredient_name == ingredient_name,
+                ShoppingListItem.category == category
+            )
+        ).first()
+
+        if existing_item:
+            metadata = dict(existing_item.consolidation_metadata or {})
+            if quantity:
+                metadata["manual_quantity"] = quantity
+            existing_item.consolidation_metadata = metadata
+            existing_item.consolidated_display = self._calculate_consolidated_display(existing_item, unit_system)
+            self.db.commit()
+            self.db.refresh(existing_item)
+            return existing_item
+
+        metadata = {"manual_quantity": quantity} if quantity else {}
+        item = ShoppingListItem(
+            shopping_list_id=shopping_list.id,
+            ingredient_name=ingredient_name,
+            category=category,
+            consolidated_display=quantity or "",
+            is_checked=False,
+            source="manual",
+            consolidation_metadata=metadata
+        )
+        self.db.add(item)
+        self.db.commit()
+        self.db.refresh(item)
+
+        return item
+
+    def get_shopping_list_recipes(self, user_id: int) -> List[ShoppingListRecipeAssociation]:
+        """Get the recipes currently contributing to the user's shopping list"""
+
+        shopping_list = self.get_or_create_shopping_list(user_id)
+
+        associations = self.db.query(ShoppingListRecipeAssociation).filter(
+            ShoppingListRecipeAssociation.shopping_list_id == shopping_list.id
+        ).order_by(ShoppingListRecipeAssociation.added_at.desc()).all()
+
+        seen = set()
+        result = []
+        for association in associations:
+            if association.recipe_id in seen:
+                continue
+            seen.add(association.recipe_id)
+            result.append(association)
+
+        return result
+
     def clear_shopping_list(self, user_id: int) -> bool:
         """Clear all items from user's shopping list"""
         try:
@@ -281,7 +442,7 @@ class ShoppingListService:
                     ShoppingListRecipeBreakdown.shopping_item_id.in_(item_ids)
                 ).delete(synchronize_session=False)
 
-            # Delete all items
+            # Delete all items (recipe-sourced and manual)
             self.db.query(ShoppingListItem).filter(
                 ShoppingListItem.shopping_list_id == shopping_list.id
             ).delete(synchronize_session=False)
@@ -305,16 +466,18 @@ class ShoppingListService:
         """Remove a specific recipe's ingredients from the shopping list"""
 
         shopping_list = self.get_or_create_shopping_list(user_id)
+        unit_system = self._get_unit_system(user_id)
 
-        # Find recipe association
-        recipe_association = self.db.query(ShoppingListRecipeAssociation).filter(
+        # Find all recipe associations for this recipe (there may be more than
+        # one if the recipe was added multiple times with allow_duplicate)
+        recipe_associations = self.db.query(ShoppingListRecipeAssociation).filter(
             and_(
                 ShoppingListRecipeAssociation.shopping_list_id == shopping_list.id,
                 ShoppingListRecipeAssociation.recipe_id == recipe_id
             )
-        ).first()
+        ).all()
 
-        if not recipe_association:
+        if not recipe_associations:
             raise ValueError(f"Recipe {recipe_id} not found in shopping list")
 
         # Find all breakdowns for this recipe
@@ -337,15 +500,18 @@ class ShoppingListService:
             # Check if item has other breakdowns
             remaining_breakdowns = [b for b in item.recipe_breakdowns if b.id != breakdown.id]
 
-            if not remaining_breakdowns:
-                # No other recipes use this ingredient, delete the item
+            has_manual_data = bool(item.consolidation_metadata and "manual_quantity" in item.consolidation_metadata)
+
+            if not remaining_breakdowns and not has_manual_data:
+                # No other recipes use this ingredient and no manual data to preserve
                 self.db.delete(item)
             else:
-                # Recalculate consolidated display
-                item.consolidated_display = self._calculate_consolidated_display(item)
+                # Either other recipes still use it, or manual data must be preserved
+                item.consolidated_display = self._calculate_consolidated_display(item, unit_system)
 
-        # Remove recipe association
-        self.db.delete(recipe_association)
+        # Remove all associations for this recipe
+        for recipe_association in recipe_associations:
+            self.db.delete(recipe_association)
         self.db.commit()
 
         return self._get_shopping_list_response(shopping_list)

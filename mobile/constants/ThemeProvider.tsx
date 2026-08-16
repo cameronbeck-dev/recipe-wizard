@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { useColorScheme, Appearance } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { MD3Theme } from 'react-native-paper';
 import { PreferencesService } from '../services/preferences';
 import { 
   BRAND_COLORS, 
@@ -179,4 +180,59 @@ export function useThemedStyles<T extends Record<string, any>>(
 ): T {
   const { theme, isDark } = useAppTheme();
   return styleFactory(theme, isDark);
+}
+
+// Builds a react-native-paper MD3 theme from the app's own theme, so Paper
+// components (Portal, Snackbar, Dialog, etc.) match the app's brand colors
+// instead of Paper's default purple.
+export function usePaperTheme(): MD3Theme {
+  const { theme, isDark } = useAppTheme();
+
+  return {
+    dark: isDark,
+    version: 3,
+    mode: 'adaptive',
+    colors: {
+      primary: theme.colors.wizard.primary,
+      onPrimary: '#ffffff',
+      primaryContainer: theme.colors.wizard.primary + '20',
+      onPrimaryContainer: theme.colors.wizard.primary,
+      secondary: theme.colors.wizard.accent,
+      onSecondary: '#ffffff',
+      secondaryContainer: theme.colors.wizard.accent + '20',
+      onSecondaryContainer: theme.colors.wizard.accent,
+      tertiary: theme.colors.wizard.accent,
+      onTertiary: '#ffffff',
+      tertiaryContainer: theme.colors.wizard.accent + '20',
+      onTertiaryContainer: theme.colors.wizard.accent,
+      error: theme.colors.status.error,
+      onError: '#ffffff',
+      errorContainer: theme.colors.status.error + '20',
+      onErrorContainer: theme.colors.status.error,
+      background: theme.colors.theme.background,
+      onBackground: theme.colors.theme.text,
+      surface: theme.colors.theme.surface,
+      onSurface: theme.colors.theme.text,
+      surfaceVariant: theme.colors.theme.backgroundSecondary,
+      onSurfaceVariant: theme.colors.theme.textSecondary,
+      outline: theme.colors.theme.border,
+      outlineVariant: theme.colors.theme.borderLight,
+      shadow: '#000000',
+      scrim: '#000000',
+      inverseSurface: isDark ? '#ffffff' : '#000000',
+      inverseOnSurface: isDark ? '#000000' : '#ffffff',
+      inversePrimary: theme.colors.wizard.primaryLight,
+      elevation: {
+        level0: 'transparent',
+        level1: theme.colors.theme.backgroundSecondary,
+        level2: theme.colors.theme.backgroundTertiary,
+        level3: theme.colors.theme.surface,
+        level4: theme.colors.theme.surface,
+        level5: theme.colors.theme.surface,
+      },
+      surfaceDisabled: theme.colors.theme.textDisabled + '12',
+      onSurfaceDisabled: theme.colors.theme.textDisabled,
+      backdrop: 'rgba(0, 0, 0, 0.5)',
+    } as any,
+  } as MD3Theme;
 }

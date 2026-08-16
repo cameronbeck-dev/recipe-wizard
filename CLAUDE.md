@@ -12,7 +12,7 @@ A cross-platform mobile app (React Native / Expo) that turns a natural-language 
 
 ---
 
-## Current phase (as of 2026-04-21): store submission
+## Current phase (as of 2026-08-16): store submission
 
 The app is feature-complete and functional. The current work is getting it onto Google Play and the Apple App Store.
 
@@ -20,9 +20,10 @@ The app is feature-complete and functional. The current work is getting it onto 
 
 - Full mobile app: welcome → auth → tabs (prompt, history, shopping-list, profile) → recipe result → subscription flows
 - FastAPI backend deployed to Heroku with Postgres + Redis rate limiting
-- OpenAI integration for recipe generation, modification, and ideas
-- RevenueCat integration with mock-mode fallback for Expo Go
-- Shopping list with smart ingredient consolidation across recipes
+- OpenAI integration for recipe generation, modification, and ideas — two-tier model selection (free vs. premium), strict JSON-schema-constrained structured output, a scope/refusal instruction plus an OpenAI Moderation API pre-filter against off-topic or harmful misuse
+- Server-side premium/subscription tracking via a RevenueCat webhook (`POST /api/webhooks/revenuecat`) — the backend now has its own source of truth for entitlement (`User.is_premium`), independent of the client-side RevenueCat SDK
+- RevenueCat integration with mock-mode fallback for Expo Go; mobile now calls `Purchases.logIn`/`logOut` on auth state changes so RevenueCat's customer id maps to the backend user id
+- Shopping list with smart ingredient consolidation across recipes, unit conversion (metric/imperial, per the user's saved preference), quantity overrides, manual items, search, collapsible categories, and swipe-to-delete
 - User preferences, dietary restrictions, grocery category reordering
 - Light/dark theme with persistence
 - JWT auth with refresh + credential-based re-auth fallback
@@ -59,7 +60,7 @@ The app is feature-complete and functional. The current work is getting it onto 
 | Android package | `com.cammybeck.recipewizard` |
 | iOS bundle ID | `com.cammybeck.recipewizard` |
 | EAS project ID | `13d76684-3800-406a-a071-e2c02ca60824` |
-| Current `versionCode` | 15 (bumped for upcoming build; not yet shipped) |
+| `versionCode` | Not pinned here — both `mobile/eas.json` build profiles have `"autoIncrement": "versionCode"`, so EAS bumps it automatically on each build. Don't hand-edit it in `app.json`. |
 | Backend | FastAPI on Heroku (see `heroku.yml`) |
 
 ---
@@ -76,7 +77,9 @@ The app is feature-complete and functional. The current work is getting it onto 
 **Backend (`backend/`)**
 - FastAPI + SQLAlchemy + Alembic
 - Postgres (managed by Heroku), Redis for `fastapi-limiter`
-- OpenAI API via `services/openai_service.py` (no `user` parameter passed — prompts are sent without user identifiers)
+- OpenAI API via `services/openai_service.py` (no `user` parameter passed — prompts are sent without user identifiers). Two-tier model selection (`DEFAULT_MODEL_FREE` / `DEFAULT_MODEL_PAID`, driven by `User.is_premium`), strict `json_schema` structured output (not the looser `json_object` mode), a scope/refusal instruction in all three system prompts (generate/modify/ideas), and an `omni-moderation-latest` pre-filter on user-supplied text (fails open on moderation-service errors)
+- Server-side premium tracking: `services/revenuecat_service.py` + `routers/webhooks.py` (`POST /api/webhooks/revenuecat`), backed by `User.premium_expires_at` / `is_premium`
+- Shopping list unit conversion: `services/unit_conversion.py` (hand-rolled, metric/imperial, per `User.units`)
 - JWT auth, CORS hardening, security-headers middleware, structured logging
 
 **Docs site (`docs/`)**
@@ -137,7 +140,8 @@ recipe-wizard/
 │   │   ├── recipe-result.tsx
 │   │   └── _layout.tsx
 │   ├── components/           # Button, TextInput, ExpandableCard, PremiumFeature, etc.
-│   ├── contexts/             # AuthContext, PremiumContext
+│   │   └── shopping/         # ShoppingListRow, CategorySection, SwipeableRow, AddManualItemSheet
+│   ├── contexts/             # AuthContext, PremiumContext, ToastContext
 │   ├── services/             # api, auth, purchases, preferences, savedRecipes, config
 │   ├── constants/            # theme + ThemeProvider
 │   ├── types/                # api types
@@ -146,8 +150,8 @@ recipe-wizard/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py           # CORS, middleware, health endpoints
-│   │   ├── routers/          # auth, users, recipes, shopping_list, jobs
-│   │   ├── services/         # openai_service, llm_service, shopping_list_service
+│   │   ├── routers/          # auth, users, recipes, shopping_list, jobs, webhooks
+│   │   ├── services/         # openai_service, llm_service, shopping_list_service, unit_conversion, revenuecat_service
 │   │   ├── models/           # SQLAlchemy
 │   │   ├── schemas/          # Pydantic
 │   │   └── middleware/       # security, logging, CORS
@@ -171,12 +175,29 @@ The three historical `*_IMPLEMENTATION*.md` / `*_CHECKLIST.md` files at repo roo
 - **The mobile `services/auth.ts` re-stores the plaintext password in SecureStore** for silent re-auth after JWT refresh failure. This is a deliberate (though debatable) UX choice; discuss before changing.
 - **The backend LLM endpoints sometimes retry internally up to 3 times.** The mobile prompt screen reflects this with a 3-segment progress bar animation driven by `retry_count` in the job status.
 - **Use `max_completion_tokens`, not `max_tokens`, in all OpenAI API calls.** Newer models (e.g. `gpt-5.4-nano`, `o4-mini`) reject `max_tokens` outright. All three call sites in `openai_service.py` already use `max_completion_tokens`; don't revert them.
-- **The Heroku `DEFAULT_MODEL` env var is `gpt-5.4-nano`.** The in-code fallback is `gpt-4o-mini`, but production always uses the env var. Check Heroku config before assuming the active model.
+- **Model selection is two-tier, not a single `DEFAULT_MODEL`.** `openai_service.py` reads `DEFAULT_MODEL_FREE` (default `gpt-5.6-luna`) and `DEFAULT_MODEL_PAID` (default `gpt-5.6-terra`), chosen per-request via `_select_model(user)` based on `user.is_premium`. The old single `DEFAULT_MODEL` var is now **fallback-only** (`self.default_model = os.getenv("DEFAULT_MODEL") or self.model_free`) — it does NOT override the tiered vars. If Heroku still has a `DEFAULT_MODEL` set from before this change, it has no effect on which model actually gets used; check `DEFAULT_MODEL_FREE`/`DEFAULT_MODEL_PAID` in Heroku config instead. `backend/tests/conftest.py` hard-clears `DEFAULT_MODEL` to `""` (not `setdefault`) specifically so a developer's local `.env` (loaded via `load_dotenv()` at import time) can't leak a stale model name into the test suite.
+- **Recipe/modify/ideas responses use strict `json_schema` structured output, not `json_object`.** Don't revert to the looser mode — it's what makes `refused`/`refusal_reason` fields reliable and prevents off-schema content. Strict mode requires every schema property to be listed in `required`, with optional fields expressed as nullable type unions (`["string", "null"]`) rather than omitted — keep that pattern if the schema changes.
+- **All three system prompts (generate/modify/ideas) carry a SAFETY/scope section instructing the model to refuse non-cooking requests.** Don't remove it — it's the primary defense against someone using the recipe format as a wrapper for unrelated or harmful content. A refusal raises `RecipeRequestRefused` (a `ValueError` subclass) — it's deliberately excluded from the retry loop and from the generic `except ValueError` handlers in `routers/recipes.py` (each endpoint has its own `except RecipeRequestRefused` clause listed *before* the generic one, since Python matches the first applicable `except`).
+- **`CANCELLATION` and `BILLING_ISSUE` RevenueCat webhook events must never revoke premium access.** `services/revenuecat_service.py` intentionally only revokes on `EXPIRATION`/`SUBSCRIPTION_PAUSED`. Cancellation means auto-renew was turned off, not that access ended — the user keeps access until `premium_expires_at`. Don't "simplify" this into a blanket revoke-on-any-negative-event.
+- **`backend/tests/conftest.py`'s `FakeOpenAIClient` routes to different canned fixture data based on substrings in the system prompt** (e.g. "recipe ideas"). If you edit a system prompt, check that fixture-routing logic before assuming the right test fixture will be used — a prompt that accidentally contains a routing substring will silently get the wrong fixture and produce confusing test failures.
 - **The health monitor checks `/app` disk usage, not `/`.** On Heroku the root `/` is the read-only slug image and always reports ~100%; `/app` is the actual writable volume. `health_monitor.py` uses `_disk_path()` to pick the right path. Don't change it back to a hardcoded `'/'`.
+- **Alembic migration chain**: current head is `008` (`005` → `006` → `007_add_premium_subscription_fields` → `008_add_shopping_list_item_overrides`). Migrations `001`–`004` are missing from the repo — production apparently has those tables created manually, and `main.py` has a comment skipping the migration check at startup. This pre-existing gap wasn't introduced by recent work but is worth fixing properly (reconstruct or re-baseline the history) before it causes a problem on a fresh environment.
+- **Shopping-list unit conversion respects `User.units` (`metric`/`imperial`), not a hardcoded system.** `services/unit_conversion.py` is a small hand-rolled converter (not `pint`) — deliberately lightweight. Note: `consolidated_display` is computed and stored at write time, not recomputed when a user changes their `units` preference — existing items only pick up the new unit system on their next mutation (a recipe add/remove touching that item). This is an accepted tradeoff, not a bug.
+- **Shopping-list manual items (`source="manual"`, or any item with `consolidation_metadata["manual_quantity"]`) must survive recipe removal.** `remove_recipe_from_shopping_list` checks for the presence of `manual_quantity` in `consolidation_metadata`, not `source == "manual"` alone — a manual item that later gets merged with a recipe-sourced ingredient still needs to survive that recipe being removed. Don't simplify this check back to a plain `source` comparison.
+- **The `POST /api/shopping-list/add-recipe` duplicate-recipe 409 response is returned via a direct `JSONResponse`, not `raise HTTPException(...)`.** The app's global `HTTPException` handler validates `exc.detail` against `ErrorResponse.detail: str`, which rejects a dict — the dict-shaped `{detail, code, addedAt}` body this endpoint needs would break that handler. This is a known, accepted workaround, not an oversight; a future cleanup could loosen `ErrorResponse.detail` to `str | dict` instead if this pattern needs to be reused elsewhere.
 
 ---
 
 ## Session history (recent)
+
+### 2026-08-16 — LLM safety hardening, two-tier models, server-side premium tracking, shopping-list rework
+- Session history had gone stale since 2026-04-25 despite six more commits landing (`984c212` GPT-5.5 upgrade + structured prompts, `898c4c2` Android production build switched to APK, plus three doc/test commits) — this entry catches things back up.
+- **Server-side premium tracking (new)**: the backend previously had zero knowledge of premium status — RevenueCat was entirely client-side, and the mobile app never called `Purchases.logIn`, so RevenueCat's `app_user_id` was always anonymous. Added `POST /api/webhooks/revenuecat` (`routers/webhooks.py` + `services/revenuecat_service.py`), a `User.is_premium` hybrid property backed by `premium_expires_at`, and migration `007`. Mobile `AuthContext` now calls `purchasesService.setUserID()`/`.logout()` on login/register/session-restore/sign-out (the SDK-not-yet-initialized race is handled via a pending-id queue in `purchases.ts`). Cancellation/billing-issue events never revoke access — only expiration does.
+- **Two-tier LLM model selection**: `DEFAULT_MODEL_FREE` (`gpt-5.6-luna`) vs `DEFAULT_MODEL_PAID` (`gpt-5.6-terra`), chosen via `user.is_premium`. Evaluated all major providers (OpenAI/Anthropic/Google) — stayed on OpenAI for structured-output reliability and zero migration risk.
+- **LLM safety hardening**: added a SAFETY/scope section to all three system prompts (refuse non-cooking requests, reject the recipe format being used as a wrapper for harmful content); switched from loose `json_object` to strict `json_schema` structured output on all three call sites; added an `omni-moderation-latest` pre-filter (fails open) on user-supplied text. New `RecipeRequestRefused` exception, routed to a clean 400 on all three endpoints.
+- **Shopping-list rework** (paid feature, was "clunky"): prominent sticky add-to-list button, toast feedback (new `ToastContext`, Paper `Snackbar`) replacing a 5-second button-text state machine, duplicate-recipe-add confirmation (409 + dialog), quantity overrides with staleness detection, manual item add, per-user metric/imperial unit conversion (new `services/unit_conversion.py`), search, collapsible categories, swipe-to-delete (`PanResponder`, no new native dependency), clear-checked-items alongside clear-all. Migration `008`.
+- **Housekeeping**: reverted an uncommitted stray `versionCode` bump in `mobile/app.json` (both EAS build profiles auto-increment it, so manual edits aren't needed); removed a stray empty root-level `package-lock.json`; reverted `mobile/eas.json` production Android build back to `app-bundle` (Google Play requires AAB for new submissions — `898c4c2` had switched it to APK).
+- Commit range this session: TBD at commit time — see git log around this entry's date.
 
 ### 2026-04-24/25 — Android test build + backend fixes
 - Built EAS `preview` APK for Android device testing (versionCode auto-bumped to 16).

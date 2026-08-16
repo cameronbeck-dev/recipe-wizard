@@ -4,13 +4,14 @@ Bypasses the HTTP layer to exercise the LLM and OpenAI service helpers
 that the routers rely on.
 """
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from app.schemas import RecipeGenerationRequest, RecipeIdeaGenerationRequest
 from app.services.llm_service import llm_service, check_llm_service_status
-from app.services.openai_service import openai_service
+from app.services.openai_service import openai_service, RecipeRequestRefused
 
 from tests.conftest import (
     SAMPLE_IDEAS_JSON, SAMPLE_RECIPE_JSON, FakeOpenAIClient, make_chat_completion,
@@ -578,3 +579,217 @@ class TestGenerateRecipeComplianceRetry:
         assert result["recipe_data"]["recipe"]["difficulty"] == "medium"  # Default applied
         assert isinstance(result["recipe_data"]["recipe"]["instructions"], list)
         assert result["retry_count"] == 2  # 2 retries (total 3 attempts)
+
+
+# ---------------------------------------------------------------------------
+# Two-tier model selection
+# ---------------------------------------------------------------------------
+class TestModelSelection:
+    def test_free_user_resolves_to_model_free(self, user_factory):
+        user = user_factory()
+        assert openai_service._select_model(user) == openai_service.model_free
+
+    def test_premium_user_resolves_to_model_paid(self, user_factory):
+        user = user_factory(premium_expires_at=datetime.now(timezone.utc) + timedelta(days=30))
+        assert openai_service._select_model(user) == openai_service.model_paid
+
+    def test_none_user_resolves_to_model_free(self):
+        assert openai_service._select_model(None) == openai_service.model_free
+
+    def test_select_model_never_raises(self, monkeypatch, user_factory):
+        user = user_factory()
+        monkeypatch.setattr(openai_service, "_is_premium_user", lambda u: 1 / 0)
+        assert openai_service._select_model(user) == openai_service.default_model
+
+    async def test_generate_recipe_reports_actual_model_used(self, monkeypatch, user_factory):
+        fake = FakeOpenAIClient()
+        monkeypatch.setattr(openai_service, "client", fake)
+
+        user = user_factory(premium_expires_at=datetime.now(timezone.utc) + timedelta(days=30))
+        request = RecipeGenerationRequest(prompt="creamy pasta")
+        result = await openai_service.generate_recipe(request, user)
+
+        assert result["model"] == openai_service.model_paid
+        assert fake.calls[0]["model"] == openai_service.model_paid
+
+
+# ---------------------------------------------------------------------------
+# Refusal handling (strict-schema refused flag + SDK refusal channel)
+# ---------------------------------------------------------------------------
+class TestRecipeRefusal:
+    async def test_refused_flag_raises_without_retry(self, monkeypatch, user_factory):
+        refused_payload = {
+            "refused": True,
+            "refusal_reason": "Not a legitimate recipe request.",
+            "recipe": None,
+            "ingredients": None,
+        }
+        attempts = {"n": 0}
+
+        def create(**kwargs):
+            attempts["n"] += 1
+            return make_chat_completion(json.dumps(refused_payload))
+
+        fake = FakeOpenAIClient()
+        fake.chat.completions.create = create
+        monkeypatch.setattr(openai_service, "client", fake)
+
+        with pytest.raises(RecipeRequestRefused):
+            await openai_service.generate_recipe(
+                RecipeGenerationRequest(prompt="anything"), user_factory(),
+            )
+        assert attempts["n"] == 1
+
+    async def test_sdk_refusal_channel_raises_without_retry(self, monkeypatch, user_factory):
+        attempts = {"n": 0}
+
+        def create(**kwargs):
+            attempts["n"] += 1
+            return make_chat_completion(refusal="I can't help with that.")
+
+        fake = FakeOpenAIClient()
+        fake.chat.completions.create = create
+        monkeypatch.setattr(openai_service, "client", fake)
+
+        with pytest.raises(RecipeRequestRefused):
+            await openai_service.generate_recipe(
+                RecipeGenerationRequest(prompt="anything"), user_factory(),
+            )
+        assert attempts["n"] == 1
+
+    async def test_missing_refused_key_treated_as_false(self, monkeypatch, user_factory):
+        """Old-format fixtures (no `refused` key) must still parse as a success."""
+        fake = FakeOpenAIClient()
+        monkeypatch.setattr(openai_service, "client", fake)
+
+        result = await openai_service.generate_recipe(
+            RecipeGenerationRequest(prompt="anything"), user_factory(),
+        )
+        assert result["recipe_data"]["recipe"]["title"] == "Creamy Chicken Pasta"
+
+    async def test_modify_refused_flag_raises_without_retry(self, monkeypatch, user_factory):
+        refused_payload = {
+            "refused": True,
+            "refusal_reason": "Not a legitimate recipe request.",
+            "recipe": None,
+            "ingredients": None,
+        }
+        attempts = {"n": 0}
+
+        def create(**kwargs):
+            attempts["n"] += 1
+            return make_chat_completion(json.dumps(refused_payload))
+
+        fake = FakeOpenAIClient()
+        fake.chat.completions.create = create
+        monkeypatch.setattr(openai_service, "client", fake)
+
+        original_recipe = SimpleNamespace(
+            id=1, title="Test", description="d", instructions=["a"],
+            prep_time=5, cook_time=5, servings=2, difficulty="easy", tips=[],
+        )
+        with pytest.raises(RecipeRequestRefused):
+            await openai_service.modify_recipe(
+                original_recipe, [], "make it dangerous", user_factory(),
+            )
+        assert attempts["n"] == 1
+
+    async def test_ideas_refused_flag_raises_without_retry(self, monkeypatch):
+        refused_payload = {
+            "refused": True,
+            "refusal_reason": "Not a legitimate recipe request.",
+            "ideas": None,
+        }
+        attempts = {"n": 0}
+
+        def create(**kwargs):
+            attempts["n"] += 1
+            return make_chat_completion(json.dumps(refused_payload))
+
+        fake = FakeOpenAIClient()
+        fake.chat.completions.create = create
+        monkeypatch.setattr(openai_service, "client", fake)
+
+        with pytest.raises(RecipeRequestRefused):
+            await openai_service.generate_recipe_ideas("anything", count=3)
+        assert attempts["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# OpenAI moderation pre-filter (fails open)
+# ---------------------------------------------------------------------------
+class TestModeration:
+    def test_flagged_text_raises_refused(self, monkeypatch):
+        fake = FakeOpenAIClient()
+        fake.moderation_flagged = True
+        monkeypatch.setattr(openai_service, "client", fake)
+
+        with pytest.raises(RecipeRequestRefused):
+            openai_service._check_moderation("some text")
+
+    def test_moderation_error_fails_open(self, monkeypatch):
+        fake = FakeOpenAIClient()
+
+        def boom(**kwargs):
+            raise RuntimeError("moderation service down")
+        fake.moderations.create = boom
+        monkeypatch.setattr(openai_service, "client", fake)
+
+        # Must not raise
+        openai_service._check_moderation("some text")
+
+    async def test_flagged_prompt_blocks_before_chat_call(self, monkeypatch, user_factory):
+        fake = FakeOpenAIClient()
+        fake.moderation_flagged = True
+        monkeypatch.setattr(openai_service, "client", fake)
+
+        with pytest.raises(RecipeRequestRefused):
+            await openai_service.generate_recipe(
+                RecipeGenerationRequest(prompt="anything"), user_factory(),
+            )
+        assert len(fake.calls) == 0
+        assert len(fake.moderation_calls) == 1
+
+    async def test_moderation_service_outage_allows_generation_to_proceed(self, monkeypatch, user_factory):
+        fake = FakeOpenAIClient()
+
+        def boom(**kwargs):
+            raise RuntimeError("moderation service down")
+        fake.moderations.create = boom
+        monkeypatch.setattr(openai_service, "client", fake)
+
+        result = await openai_service.generate_recipe(
+            RecipeGenerationRequest(prompt="anything"), user_factory(),
+        )
+        assert result["recipe_data"]["recipe"]["title"] == "Creamy Chicken Pasta"
+
+
+# ---------------------------------------------------------------------------
+# Job service integration — refusal / moderation failures land as failed jobs
+# ---------------------------------------------------------------------------
+class TestJobServiceRefusal:
+    async def test_moderation_flagged_job_ends_failed_with_clean_message(
+        self, monkeypatch, user_factory, db_session,
+    ):
+        from app.services.job_service import job_service
+        from app.models import RecipeJob
+
+        fake = FakeOpenAIClient()
+        fake.moderation_flagged = True
+        monkeypatch.setattr(openai_service, "client", fake)
+
+        user = user_factory()
+        job = RecipeJob(
+            id="refusal-job", user_id=user.id, status="pending",
+            job_type="generate", prompt="anything", progress=0,
+        )
+        db_session.add(job)
+        db_session.commit()
+
+        await job_service._process_generation_job("refusal-job")
+
+        db_session.expire_all()
+        refreshed = db_session.query(RecipeJob).filter_by(id="refusal-job").first()
+        assert refreshed.status == "failed"
+        assert "server error" not in (refreshed.error_message or "").lower()
+        assert len(fake.calls) == 0

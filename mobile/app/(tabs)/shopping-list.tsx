@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { ScrollView, View, RefreshControl, TouchableOpacity, Platform } from 'react-native';
-import { Text, Portal, Dialog, Button, Provider as PaperProvider, MD3Theme } from 'react-native-paper';
+import { ScrollView, View, RefreshControl, TouchableOpacity, TextInput as RNTextInput } from 'react-native';
+import { Text, Portal, Dialog, Button, Menu } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAppTheme } from '../../constants/ThemeProvider';
 import { useNetworkStatus } from '../../hooks/useNetworkStatus';
@@ -9,75 +9,61 @@ import { apiService } from '../../services/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { router } from 'expo-router';
-import { CheckboxItem } from '../../components/CheckboxItem';
 import { HeaderComponent } from '../../components/HeaderComponent';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { PremiumFeature } from '../../components/PremiumFeature';
-import { usePremium, PREMIUM_FEATURES } from '../../contexts/PremiumContext';
+import { usePremium } from '../../contexts/PremiumContext';
 import { PremiumBadge } from '../../components/PremiumBadge';
+import { useToast } from '../../contexts/ToastContext';
+import { PreferencesService } from '../../services/preferences';
+import { CategorySection } from '../../components/shopping/CategorySection';
+import { ShoppingListRow } from '../../components/shopping/ShoppingListRow';
+import { AddManualItemSheet } from '../../components/shopping/AddManualItemSheet';
+import { getCategoryColor } from '../../constants/categories';
+
+const COLLAPSED_CATEGORIES_KEY = '@RecipeWizard:collapsedShoppingCategories';
 
 export default function ShoppingListScreen() {
-  const { theme, isDark } = useAppTheme();
+  const { theme } = useAppTheme();
   const { isOnline } = useNetworkStatus();
-  const { isPremium, checkPremiumFeature } = usePremium();
+  const { isPremium } = usePremium();
+  const toast = useToast();
 
-  // Create Paper-compatible theme
-  const paperTheme: MD3Theme = {
-    dark: isDark,
-    version: 3,
-    mode: 'adaptive',
-    colors: {
-      primary: theme.colors.wizard.primary,
-      onPrimary: '#ffffff',
-      primaryContainer: theme.colors.wizard.primary + '20',
-      onPrimaryContainer: theme.colors.wizard.primary,
-      secondary: theme.colors.wizard.accent,
-      onSecondary: '#ffffff',
-      secondaryContainer: theme.colors.wizard.accent + '20',
-      onSecondaryContainer: theme.colors.wizard.accent,
-      tertiary: theme.colors.wizard.accent,
-      onTertiary: '#ffffff',
-      tertiaryContainer: theme.colors.wizard.accent + '20',
-      onTertiaryContainer: theme.colors.wizard.accent,
-      error: theme.colors.status.error,
-      onError: '#ffffff',
-      errorContainer: theme.colors.status.error + '20',
-      onErrorContainer: theme.colors.status.error,
-      background: theme.colors.theme.background,
-      onBackground: theme.colors.theme.text,
-      surface: theme.colors.theme.surface,
-      onSurface: theme.colors.theme.text,
-      surfaceVariant: theme.colors.theme.backgroundSecondary,
-      onSurfaceVariant: theme.colors.theme.textSecondary,
-      outline: theme.colors.theme.border,
-      outlineVariant: theme.colors.theme.borderLight,
-      shadow: '#000000',
-      scrim: '#000000',
-      inverseSurface: isDark ? '#ffffff' : '#000000',
-      inverseOnSurface: isDark ? '#000000' : '#ffffff',
-      inversePrimary: theme.colors.wizard.primaryLight,
-      elevation: {
-        level0: 'transparent',
-        level1: theme.colors.theme.backgroundSecondary,
-        level2: theme.colors.theme.backgroundTertiary,
-        level3: theme.colors.theme.surface,
-        level4: theme.colors.theme.surface,
-        level5: theme.colors.theme.surface,
-      },
-      surfaceDisabled: theme.colors.theme.textDisabled + '12',
-      onSurfaceDisabled: theme.colors.theme.textDisabled,
-      backdrop: 'rgba(0, 0, 0, 0.5)',
-    } as any,
-  } as MD3Theme;
   const [shoppingList, setShoppingList] = useState<ShoppingListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [clearDialogVisible, setClearDialogVisible] = useState(false);
+  const [clearCheckedDialogVisible, setClearCheckedDialogVisible] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
   const [refreshing, setRefreshing] = useState(false);
   const [savedRecipes, setSavedRecipes] = useState<SavedRecipeData[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [addSheetVisible, setAddSheetVisible] = useState(false);
+  const [groceryCategories, setGroceryCategories] = useState<string[]>([]);
 
-  // Group items by category
-  const itemsByCategory = shoppingList.reduce((acc, item) => {
+  // Load persisted collapsed-category state
+  useEffect(() => {
+    AsyncStorage.getItem(COLLAPSED_CATEGORIES_KEY).then(raw => {
+      if (raw) {
+        try {
+          setCollapsedCategories(new Set(JSON.parse(raw)));
+        } catch {}
+      }
+    });
+    PreferencesService.loadPreferences().then(prefs => {
+      setGroceryCategories(prefs.groceryCategories);
+    }).catch(() => {});
+  }, []);
+
+  const isSearching = searchQuery.trim().length > 0;
+
+  // Filter by search, then group by category
+  const filteredList = isSearching
+    ? shoppingList.filter(item => item.ingredientName.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+    : shoppingList;
+
+  const itemsByCategory = filteredList.reduce((acc, item) => {
     if (!acc[item.category]) {
       acc[item.category] = [];
     }
@@ -88,6 +74,7 @@ export default function ShoppingListScreen() {
   const categories = Object.keys(itemsByCategory).sort();
   const totalItems = shoppingList.length;
   const completedItems = shoppingList.filter(item => item.isChecked).length;
+  const checkedCount = shoppingList.filter(item => item.isChecked).length;
 
   const toggleItemExpanded = (itemId: string) => {
     const newExpanded = new Set(expandedItems);
@@ -99,13 +86,22 @@ export default function ShoppingListScreen() {
     setExpandedItems(newExpanded);
   };
 
+  const toggleCategoryCollapsed = (category: string) => {
+    const next = new Set(collapsedCategories);
+    if (next.has(category)) {
+      next.delete(category);
+    } else {
+      next.add(category);
+    }
+    setCollapsedCategories(next);
+    AsyncStorage.setItem(COLLAPSED_CATEGORIES_KEY, JSON.stringify(Array.from(next))).catch(() => {});
+  };
+
   const handleRecipePress = async (recipeId: string, recipeTitle: string) => {
     try {
-      // First, try to find the recipe in saved recipes
       const savedRecipe = savedRecipes.find(recipe => recipe.id === recipeId);
 
       if (savedRecipe) {
-        // Navigate with full recipe data
         router.push({
           pathname: '/recipe-result',
           params: {
@@ -116,12 +112,10 @@ export default function ShoppingListScreen() {
         return;
       }
 
-      // If not in saved recipes, try to get from conversation history
-      const conversationHistory = await apiService.getConversationHistory(50); // Get more entries to find the recipe
+      const conversationHistory = await apiService.getConversationHistory(50);
       const historyRecipe = conversationHistory.find(entry => entry.response.id === recipeId);
 
       if (historyRecipe) {
-        // Navigate with full recipe data from history
         router.push({
           pathname: '/recipe-result',
           params: {
@@ -132,25 +126,21 @@ export default function ShoppingListScreen() {
         return;
       }
 
-      // If recipe not found in local data, show error
       console.warn('Recipe not found in local data:', recipeId, recipeTitle);
-      // For now, just show alert - could implement a more user-friendly error
-      alert(`Sorry, the recipe "${recipeTitle}" could not be found. It may have been removed from your history.`);
+      toast.show(`Sorry, the recipe "${recipeTitle}" could not be found.`, { variant: 'error' });
 
     } catch (error) {
       console.error('Error navigating to recipe:', error);
-      alert(`Sorry, there was an error loading the recipe "${recipeTitle}".`);
+      toast.show(`Sorry, there was an error loading the recipe "${recipeTitle}".`, { variant: 'error' });
     }
   };
 
   const toggleItemChecked = async (itemId: string) => {
-    // Update local state immediately for responsive UI
     const updatedItems = shoppingList.map(item =>
       item.id === itemId ? { ...item, isChecked: !item.isChecked } : item
     );
     setShoppingList(updatedItems);
 
-    // Sync with backend when online
     if (isOnline) {
       try {
         const item = updatedItems.find(i => i.id === itemId);
@@ -159,18 +149,59 @@ export default function ShoppingListScreen() {
         }
       } catch (error) {
         console.error('Error syncing item check status:', error);
-        // Revert local state on error
         setShoppingList(prev => prev.map(item =>
           item.id === itemId ? { ...item, isChecked: !item.isChecked } : item
         ));
       }
     }
 
-    // Update cache
     try {
       await AsyncStorage.setItem('cached_shopping_list', JSON.stringify(updatedItems));
     } catch (error) {
       console.error('Error updating cached shopping list:', error);
+    }
+  };
+
+  const handleSetItemQuantity = async (itemId: string, quantity: string | null) => {
+    const previous = shoppingList;
+    try {
+      const response = await apiService.setItemQuantity(itemId, quantity);
+      setShoppingList(prev => prev.map(item => (item.id === itemId ? response.item : item)));
+    } catch (error) {
+      console.error('Error setting item quantity:', error);
+      setShoppingList(previous);
+      toast.show('Failed to update quantity. Please try again.', { variant: 'error' });
+    }
+  };
+
+  const handleDeleteItem = async (itemId: string) => {
+    const previous = shoppingList;
+    setShoppingList(prev => prev.filter(item => item.id !== itemId));
+    try {
+      await apiService.deleteShoppingListItem(itemId);
+    } catch (error) {
+      console.error('Error deleting item:', error);
+      setShoppingList(previous);
+      toast.show('Failed to delete item. Please try again.', { variant: 'error' });
+    }
+  };
+
+  const handleAddManualItem = async (data: { ingredientName: string; quantity?: string; category: string }) => {
+    try {
+      const response = await apiService.addManualItem(data);
+      setShoppingList(prev => {
+        const existingIndex = prev.findIndex(i => i.id === response.item.id);
+        if (existingIndex >= 0) {
+          const copy = [...prev];
+          copy[existingIndex] = response.item;
+          return copy;
+        }
+        return [...prev, response.item];
+      });
+      toast.show(`Added "${data.ingredientName}" to your shopping list`, { variant: 'success' });
+    } catch (error) {
+      console.error('Error adding manual item:', error);
+      toast.show('Failed to add item. Please try again.', { variant: 'error' });
     }
   };
 
@@ -183,11 +214,23 @@ export default function ShoppingListScreen() {
       }
 
       setShoppingList([]);
-      // Clear cache
       await AsyncStorage.removeItem('cached_shopping_list');
     } catch (error) {
       console.error('Error clearing shopping list:', error);
-      // Show error in dialog or toast here if needed
+      toast.show('Failed to clear shopping list. Please try again.', { variant: 'error' });
+    }
+  };
+
+  const clearCheckedItems = async () => {
+    try {
+      setClearCheckedDialogVisible(false);
+      const response = await apiService.clearCheckedItems();
+      setShoppingList(response.items);
+      await AsyncStorage.setItem('cached_shopping_list', JSON.stringify(response.items));
+      toast.show(`Removed ${response.removedCount} checked item${response.removedCount === 1 ? '' : 's'}`, { variant: 'success' });
+    } catch (error) {
+      console.error('Error clearing checked items:', error);
+      toast.show('Failed to clear checked items. Please try again.', { variant: 'error' });
     }
   };
 
@@ -196,7 +239,6 @@ export default function ShoppingListScreen() {
     loadShoppingList();
   }, []);
 
-  // Also reload whenever the screen gains focus
   useFocusEffect(
     React.useCallback(() => {
       loadShoppingList();
@@ -208,7 +250,6 @@ export default function ShoppingListScreen() {
       setLoading(true);
 
       if (isOnline) {
-        // Load both shopping list and saved recipes for navigation
         const [shoppingResponse, savedRecipesData] = await Promise.all([
           apiService.getShoppingList(),
           apiService.getSavedRecipes().catch(() => [])
@@ -217,11 +258,9 @@ export default function ShoppingListScreen() {
         setShoppingList(shoppingResponse.items);
         setSavedRecipes(savedRecipesData);
 
-        // Cache the data for offline use
         await AsyncStorage.setItem('cached_shopping_list', JSON.stringify(shoppingResponse.items));
         await AsyncStorage.setItem('cached_saved_recipes', JSON.stringify(savedRecipesData));
       } else {
-        // Load from cache when offline
         const [cachedShoppingList, cachedSavedRecipes] = await Promise.all([
           AsyncStorage.getItem('cached_shopping_list'),
           AsyncStorage.getItem('cached_saved_recipes')
@@ -237,7 +276,6 @@ export default function ShoppingListScreen() {
     } catch (error) {
       console.error('Error loading shopping list:', error);
 
-      // Try to load from cache as fallback
       try {
         const [cachedShoppingList, cachedSavedRecipes] = await Promise.all([
           AsyncStorage.getItem('cached_shopping_list'),
@@ -264,47 +302,6 @@ export default function ShoppingListScreen() {
       await loadShoppingList();
     } finally {
       setRefreshing(false);
-    }
-  };
-
-  // Helper function to get category icons (same as ingredients section)
-  const getCategoryIcon = (category: string) => {
-    const categoryLower = category.toLowerCase();
-    if (categoryLower.includes('produce') || categoryLower.includes('fruit') || categoryLower.includes('vegetable')) {
-      return 'carrot';
-    } else if (categoryLower.includes('meat') || categoryLower.includes('protein') || categoryLower.includes('butchery')) {
-      return 'food-steak';
-    } else if (categoryLower.includes('dairy') || categoryLower.includes('chilled')) {
-      return 'fridge';
-    } else if (categoryLower.includes('bakery') || categoryLower.includes('bread')) {
-      return 'bread-slice';
-    } else if (categoryLower.includes('frozen')) {
-      return 'snowflake';
-    } else if (categoryLower.includes('pantry') || categoryLower.includes('canned') || categoryLower.includes('dry-goods')) {
-      return 'sack';
-    } else if (categoryLower.includes('spice') || categoryLower.includes('seasoning')) {
-      return 'shaker';
-    } else if (categoryLower.includes('beverage') || categoryLower.includes('drink')) {
-      return 'cup';
-    } else {
-      return 'cart-outline';
-    }
-  };
-
-  const getCategoryColor = (category: string) => {
-    const categoryLower = category.toLowerCase();
-    if (categoryLower.includes('produce') || categoryLower.includes('fruit') || categoryLower.includes('vegetable')) {
-      return '#10b981'; // green
-    } else if (categoryLower.includes('meat') || categoryLower.includes('protein') || categoryLower.includes('butchery')) {
-      return '#ef4444'; // red
-    } else if (categoryLower.includes('dairy') || categoryLower.includes('chilled')) {
-      return '#3b82f6'; // blue
-    } else if (categoryLower.includes('frozen')) {
-      return '#06b6d4'; // cyan
-    } else if (categoryLower.includes('pantry') || categoryLower.includes('canned') || categoryLower.includes('dry-goods')) {
-      return '#8b5cf6'; // purple
-    } else {
-      return theme.colors.wizard.primary; // default
     }
   };
 
@@ -407,6 +404,23 @@ export default function ShoppingListScreen() {
     </View>
   );
 
+  const renderNoMatchesState = () => (
+    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32 }}>
+      <MaterialCommunityIcons name="magnify" size={64} color={theme.colors.theme.textSecondary} />
+      <Text
+        style={{
+          fontSize: theme.typography.fontSize.titleMedium,
+          fontWeight: theme.typography.fontWeight.semibold,
+          color: theme.colors.theme.text,
+          textAlign: 'center',
+          marginTop: 16,
+        }}
+      >
+        No items match "{searchQuery}"
+      </Text>
+    </View>
+  );
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.theme.background }} edges={['top']}>
         <HeaderComponent
@@ -423,22 +437,81 @@ export default function ShoppingListScreen() {
                   style={{ marginRight: 16 }}
                 />
               )}
+              <TouchableOpacity onPress={() => setAddSheetVisible(true)} style={{ marginRight: 16 }}>
+                <MaterialCommunityIcons name="plus-circle-outline" size={24} color={theme.colors.theme.textSecondary} />
+              </TouchableOpacity>
               {shoppingList.length > 0 && (
-                <TouchableOpacity
-                  onPress={() => setClearDialogVisible(true)}
+                <Menu
+                  visible={menuVisible}
+                  onDismiss={() => setMenuVisible(false)}
+                  anchor={
+                    <TouchableOpacity onPress={() => setMenuVisible(true)}>
+                      <MaterialCommunityIcons
+                        name="delete-sweep"
+                        size={24}
+                        color={theme.colors.theme.textSecondary}
+                      />
+                    </TouchableOpacity>
+                  }
                 >
-                  <MaterialCommunityIcons
-                    name="delete-sweep"
-                    size={24}
-                    color={theme.colors.theme.textSecondary}
+                  <Menu.Item
+                    onPress={() => {
+                      setMenuVisible(false);
+                      setClearCheckedDialogVisible(true);
+                    }}
+                    title="Clear checked items"
+                    disabled={checkedCount === 0}
+                    leadingIcon="check-circle-outline"
                   />
-                </TouchableOpacity>
+                  <Menu.Item
+                    onPress={() => {
+                      setMenuVisible(false);
+                      setClearDialogVisible(true);
+                    }}
+                    title="Clear all"
+                    leadingIcon="delete-sweep"
+                  />
+                </Menu>
               )}
             </View>
           }
         />
 
+        {shoppingList.length > 0 && (
+          <View style={{ paddingHorizontal: 20, paddingTop: 12 }}>
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                backgroundColor: theme.colors.theme.backgroundSecondary,
+                borderRadius: theme.borderRadius.lg,
+                paddingHorizontal: theme.spacing.md,
+              }}
+            >
+              <MaterialCommunityIcons name="magnify" size={20} color={theme.colors.theme.textTertiary} />
+              <RNTextInput
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholder="Search ingredients..."
+                placeholderTextColor={theme.colors.theme.textTertiary}
+                style={{
+                  flex: 1,
+                  paddingVertical: theme.spacing.sm,
+                  paddingHorizontal: theme.spacing.sm,
+                  color: theme.colors.theme.text,
+                }}
+              />
+              {isSearching && (
+                <TouchableOpacity onPress={() => setSearchQuery('')}>
+                  <MaterialCommunityIcons name="close-circle" size={18} color={theme.colors.theme.textTertiary} />
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        )}
+
         {shoppingList.length === 0 ? renderEmptyState() : (
+          categories.length === 0 ? renderNoMatchesState() : (
           <ScrollView
             style={{ flex: 1 }}
             contentContainerStyle={{ padding: 20 }}
@@ -453,214 +526,39 @@ export default function ShoppingListScreen() {
           >
             {categories.map(category => {
             const categoryItems = itemsByCategory[category];
-            const categoryColor = getCategoryColor(category);
             const checkedInCategory = categoryItems.filter(item => item.isChecked).length;
+            const collapsed = !isSearching && collapsedCategories.has(category);
 
             return (
-              <View key={category} style={{ marginBottom: 32 }}>
-                {/* Category Header */}
-                <View style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  marginBottom: 16,
-                }}>
-                  <View style={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: 16,
-                    backgroundColor: categoryColor + '20',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    marginRight: 12,
-                  }}>
-                    <MaterialCommunityIcons
-                      name={getCategoryIcon(category) as any}
-                      size={16}
-                      color={categoryColor}
-                    />
-                  </View>
-
-                  <Text style={{
-                    fontSize: theme.typography.fontSize.titleMedium,
-                    fontWeight: theme.typography.fontWeight.medium,
-                    color: theme.colors.theme.text,
-                    flex: 1,
-                  }}>
-                    {category.charAt(0).toUpperCase() + category.slice(1).replace('-', ' ')}
-                  </Text>
-
-                  <Text style={{
-                    fontSize: theme.typography.fontSize.bodySmall,
-                    color: theme.colors.theme.textTertiary,
-                  }}>
-                    {checkedInCategory}/{categoryItems.length}
-                  </Text>
-                </View>
-
-                {/* Category Items */}
-                <View style={{ gap: 8 }}>
-                  {categoryItems.map(item => (
-                    <View key={item.id}>
-                      {/* Custom inline item with recipe breakdown */}
-                      <TouchableOpacity
-                        onPress={() => toggleItemChecked(item.id)}
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          paddingVertical: theme.spacing.md,
-                          paddingHorizontal: theme.spacing.lg,
-                          borderRadius: theme.borderRadius.lg,
-                          borderWidth: 1,
-                          backgroundColor: item.isChecked
-                            ? categoryColor + '10'
-                            : theme.colors.theme.backgroundSecondary,
-                          borderColor: item.isChecked
-                            ? categoryColor + '40'
-                            : theme.colors.theme.borderLight,
-                        }}
-                      >
-                        {/* Checkbox */}
-                        <View style={{
-                          width: 24,
-                          height: 24,
-                          borderRadius: theme.borderRadius.md,
-                          borderWidth: 2,
-                          borderColor: item.isChecked
-                            ? theme.colors.wizard.primary
-                            : theme.colors.theme.border,
-                          backgroundColor: item.isChecked
-                            ? theme.colors.wizard.primary
-                            : 'transparent',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          marginRight: theme.spacing.lg,
-                        }}>
-                          {item.isChecked && (
-                            <MaterialCommunityIcons
-                              name="check"
-                              size={16}
-                              color="#ffffff"
-                            />
-                          )}
-                        </View>
-
-                        {/* Ingredient text with recipe count */}
-                        <View style={{ flex: 1 }}>
-                          <Text style={{
-                            fontSize: theme.typography.fontSize.bodyLarge,
-                            fontWeight: theme.typography.fontWeight.medium,
-                            color: item.isChecked ? theme.colors.theme.textSecondary : theme.colors.theme.text,
-                            textDecorationLine: item.isChecked ? 'line-through' : 'none',
-                          }}>
-                            <Text style={{
-                              fontWeight: '600',
-                              color: item.isChecked ? theme.colors.theme.textSecondary : theme.colors.theme.textSecondary,
-                            }}>
-                              {item.consolidatedDisplay}
-                            </Text>
-                            {' '}
-                            {item.ingredientName}
-                            {item.recipeBreakdown.length > 1 && (
-                              <Text style={{
-                                fontSize: theme.typography.fontSize.bodySmall,
-                                color: theme.colors.theme.textSecondary,
-                                fontWeight: '400',
-                              }}>
-                                {' '}(from {item.recipeBreakdown.length} recipes)
-                              </Text>
-                            )}
-                          </Text>
-                        </View>
-
-                        {/* Dropdown arrow for recipe breakdown */}
-                        <TouchableOpacity
-                          onPress={(e) => {
-                            e.stopPropagation(); // Prevent checkbox toggle
-                            toggleItemExpanded(item.id);
-                          }}
-                          style={{
-                            padding: 8,
-                            borderRadius: 12,
-                            backgroundColor: expandedItems.has(item.id)
-                              ? theme.colors.wizard.primary + '15'
-                              : 'transparent',
-                          }}
-                        >
-                          <MaterialCommunityIcons
-                            name={expandedItems.has(item.id) ? "chevron-up" : "chevron-down"}
-                            size={20}
-                            color={expandedItems.has(item.id) ? theme.colors.wizard.primary : theme.colors.theme.textTertiary}
-                          />
-                        </TouchableOpacity>
-                      </TouchableOpacity>
-
-                      {/* Expanded recipe breakdown */}
-                      {expandedItems.has(item.id) && (
-                        <View style={{
-                          marginTop: 4,
-                          marginLeft: 40,
-                          paddingLeft: 16,
-                          paddingTop: 8,
-                          paddingBottom: 8,
-                          borderLeftWidth: 3,
-                          borderLeftColor: categoryColor + '30',
-                          backgroundColor: theme.colors.theme.backgroundTertiary,
-                          borderRadius: 8,
-                          marginRight: 8,
-                        }}>
-                          {item.recipeBreakdown.map((recipe, index) => (
-                            <View
-                              key={index}
-                              style={{
-                                flexDirection: 'row',
-                                alignItems: 'center',
-                                paddingVertical: 2,
-                              }}
-                            >
-                              <MaterialCommunityIcons
-                                name="chef-hat"
-                                size={14}
-                                color={categoryColor}
-                                style={{ marginRight: 8 }}
-                              />
-                              <Text style={{
-                                fontSize: theme.typography.fontSize.bodySmall,
-                                color: theme.colors.theme.text,
-                                flex: 1,
-                              }}>
-                                <Text style={{
-                                  fontWeight: '600',
-                                  color: theme.colors.theme.textSecondary,
-                                }}>{recipe.quantity}</Text>
-                                {' for '}
-                                <TouchableOpacity
-                                  onPress={() => handleRecipePress(recipe.recipeId, recipe.recipeTitle)}
-                                  style={{
-                                    borderRadius: 4,
-                                    paddingHorizontal: 2,
-                                  }}
-                                >
-                                  <Text style={{
-                                    fontStyle: 'italic',
-                                    color: theme.colors.wizard.primary,
-                                    textDecorationLine: 'underline',
-                                  }}>{recipe.recipeTitle}</Text>
-                                </TouchableOpacity>
-                              </Text>
-                            </View>
-                          ))}
-                        </View>
-                      )}
-                    </View>
-                  ))}
-                </View>
-              </View>
+              <CategorySection
+                key={category}
+                category={category}
+                checkedCount={checkedInCategory}
+                totalCount={categoryItems.length}
+                collapsed={collapsed}
+                onToggleCollapsed={() => toggleCategoryCollapsed(category)}
+              >
+                {categoryItems.map(item => (
+                  <ShoppingListRow
+                    key={item.id}
+                    item={item}
+                    categoryColor={getCategoryColor(category)}
+                    expanded={expandedItems.has(item.id)}
+                    onToggleExpanded={() => toggleItemExpanded(item.id)}
+                    onToggleChecked={() => toggleItemChecked(item.id)}
+                    onRecipePress={handleRecipePress}
+                    onSetQuantity={(quantity) => handleSetItemQuantity(item.id, quantity)}
+                    onDelete={() => handleDeleteItem(item.id)}
+                  />
+                ))}
+              </CategorySection>
             );
           })}
           </ScrollView>
+          )
         )}
 
-        {/* Clear Confirmation Dialog */}
+        {/* Clear All Confirmation Dialog */}
         <Portal>
           <Dialog visible={clearDialogVisible} onDismiss={() => setClearDialogVisible(false)}>
             <Dialog.Title>Clear Shopping List</Dialog.Title>
@@ -678,6 +576,32 @@ export default function ShoppingListScreen() {
             </Dialog.Actions>
           </Dialog>
         </Portal>
+
+        {/* Clear Checked Confirmation Dialog */}
+        <Portal>
+          <Dialog visible={clearCheckedDialogVisible} onDismiss={() => setClearCheckedDialogVisible(false)}>
+            <Dialog.Title>Clear Checked Items</Dialog.Title>
+            <Dialog.Content>
+              <Text style={{
+                color: theme.colors.theme.textSecondary,
+                fontSize: theme.typography.fontSize.bodyMedium
+              }}>
+                Remove {checkedCount} checked item{checkedCount === 1 ? '' : 's'} from your shopping list? This action cannot be undone.
+              </Text>
+            </Dialog.Content>
+            <Dialog.Actions>
+              <Button onPress={() => setClearCheckedDialogVisible(false)}>Cancel</Button>
+              <Button onPress={clearCheckedItems}>Clear Checked</Button>
+            </Dialog.Actions>
+          </Dialog>
+        </Portal>
+
+        <AddManualItemSheet
+          visible={addSheetVisible}
+          categories={groceryCategories.length > 0 ? groceryCategories : ['pantry']}
+          onDismiss={() => setAddSheetVisible(false)}
+          onSubmit={handleAddManualItem}
+        />
       </SafeAreaView>
   );
 }

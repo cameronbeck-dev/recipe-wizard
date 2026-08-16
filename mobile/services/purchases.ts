@@ -71,6 +71,7 @@ export interface TransactionInfo {
 
 class PurchasesService {
   private isInitialized = false;
+  private pendingUserId: string | null = null;
 
   async initialize(userId?: string): Promise<void> {
     try {
@@ -107,6 +108,13 @@ class PurchasesService {
 
       this.isInitialized = true;
       // console.log('✅ Revenue Cat initialized successfully');
+
+      // Apply any identification request that arrived before the SDK was ready
+      if (this.pendingUserId) {
+        const id = this.pendingUserId;
+        this.pendingUserId = null;
+        await this.setUserID(id);
+      }
     } catch (error) {
       console.error('❌ Failed to initialize Revenue Cat:', error);
       throw new Error('Failed to initialize purchase service');
@@ -350,7 +358,16 @@ class PurchasesService {
 
   async setUserID(userId: string): Promise<void> {
     if (!this.isInitialized) {
-      throw new Error('Purchases service not initialized');
+      // SDK isn't ready yet (e.g. AuthContext's session-restore raced ahead of
+      // PremiumContext's SDK init) — queue it and let `initialize()` apply it
+      // once the SDK comes up, instead of dropping the identification.
+      this.pendingUserId = userId;
+      // console.log('⏳ Purchases service not yet initialized, queuing user ID:', userId);
+      return;
+    }
+
+    if (this.isMockMode) {
+      return;
     }
 
     try {

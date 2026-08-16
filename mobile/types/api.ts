@@ -182,7 +182,11 @@ export interface ShoppingListItem {
   id: string;
   ingredientName: string;
   category: string;
-  consolidatedDisplay: string; // "2 whole + 1 cup"
+  consolidatedDisplay: string; // effective display: override if set, else auto-computed
+  autoConsolidatedDisplay: string; // raw auto-computed display
+  source: 'recipe' | 'manual';
+  userQuantityOverride: string | null;
+  overrideIsStale: boolean;
   recipeBreakdown: {
     recipeId: string;
     recipeTitle: string;
@@ -199,11 +203,35 @@ export interface ShoppingListResponse {
 export interface AddRecipeToShoppingListRequest {
   recipeId: string;
   userId?: string;
+  allowDuplicate?: boolean;
 }
 
 export interface UpdateShoppingListItemRequest {
   itemId: string;
   isChecked: boolean;
+}
+
+export interface ShoppingListRecipeSummary {
+  recipeId: string;
+  recipeTitle: string;
+  addedAt: string | null;
+}
+
+export interface ClearCheckedItemsResponse {
+  success: boolean;
+  removedCount: number;
+  items: ShoppingListItem[];
+}
+
+export interface ShoppingListItemUpdateResponse {
+  success: boolean;
+  item: ShoppingListItem;
+}
+
+export interface AddManualItemRequest {
+  ingredientName: string;
+  quantity?: string;
+  category?: string;
 }
 
 // Default user preferences

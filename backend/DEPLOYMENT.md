@@ -26,7 +26,8 @@ heroku config:set REDIS_URL=redis://...
 # API Configuration
 heroku config:set API_HOST=0.0.0.0
 heroku config:set API_PORT=8000
-heroku config:set DEFAULT_MODEL=gpt-4o-mini
+heroku config:set DEFAULT_MODEL_FREE=gpt-5.6-luna
+heroku config:set DEFAULT_MODEL_PAID=gpt-5.6-terra
 ```
 
 ### Security Features Implemented ✅

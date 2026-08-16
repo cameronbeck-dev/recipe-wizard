@@ -47,9 +47,14 @@
       "description": "OpenAI API key for recipe generation",
       "required": true
     },
-    "DEFAULT_MODEL": {
-      "description": "Default OpenAI model for recipe generation",
-      "value": "gpt-4o-mini",
+    "DEFAULT_MODEL_FREE": {
+      "description": "OpenAI model used for free-tier recipe generation",
+      "value": "gpt-5.6-luna",
+      "required": false
+    },
+    "DEFAULT_MODEL_PAID": {
+      "description": "OpenAI model used for premium-tier recipe generation",
+      "value": "gpt-5.6-terra",
       "required": false
     },
     "ALLOWED_ORIGINS": {

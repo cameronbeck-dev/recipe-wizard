@@ -18,17 +18,128 @@ load_dotenv()
 # Configure logging
 logger = logging.getLogger(__name__)
 
+
+class RecipeRequestRefused(ValueError):
+    """Raised when OpenAI declines a request (safety refusal or explicit
+    refused:true in the structured response). Must never be silently
+    swallowed by the generic retry-on-Exception path."""
+    pass
+
+
 class OpenAIService:
     """Service for interacting with OpenAI API for recipe generation"""
-    
+
     def __init__(self):
         self.api_key = os.getenv("OPENAI_API_KEY")
-        self.default_model = os.getenv("DEFAULT_MODEL", "gpt-5.5")
-        
+        self.model_free = os.getenv("DEFAULT_MODEL_FREE", "gpt-5.6-luna")
+        self.model_paid = os.getenv("DEFAULT_MODEL_PAID", "gpt-5.6-terra")
+        self.default_model = os.getenv("DEFAULT_MODEL") or self.model_free
+
         if not self.api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
-            
+
         self.client = OpenAI(api_key=self.api_key)
+
+    def _is_premium_user(self, user: Optional["User"]) -> bool:
+        return bool(user is not None and user.is_premium)
+
+    def _select_model(self, user: Optional["User"]) -> str:
+        try:
+            return self.model_paid if self._is_premium_user(user) else self.model_free
+        except Exception:
+            return self.default_model
+
+    def _check_moderation(self, text: str) -> None:
+        """Pre-filter user-supplied text via OpenAI's moderation endpoint.
+
+        Fails OPEN: any error talking to the moderation service is logged
+        and generation proceeds normally. Only an explicit `flagged=True`
+        result blocks the request.
+        """
+        try:
+            result = self.client.moderations.create(model="omni-moderation-latest", input=text)
+        except Exception as e:
+            logger.warning(f"Moderation check failed, proceeding with generation: {e}")
+            return
+
+        try:
+            flagged = result.results[0].flagged
+        except Exception as e:
+            logger.warning(f"Moderation check failed, proceeding with generation: {e}")
+            return
+
+        if flagged:
+            raise RecipeRequestRefused(
+                "This request could not be processed. Please try a different recipe request."
+            )
+
+    def _recipe_json_schema(self, categories: List[str]) -> dict:
+        """Strict OpenAI structured-output schema for recipe/modification responses."""
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["refused", "refusal_reason", "recipe", "ingredients"],
+            "properties": {
+                "refused": {"type": "boolean"},
+                "refusal_reason": {"type": ["string", "null"]},
+                "recipe": {
+                    "type": ["object", "null"],
+                    "additionalProperties": False,
+                    "required": [
+                        "title", "description", "instructions", "prepTime",
+                        "cookTime", "servings", "difficulty", "tips",
+                    ],
+                    "properties": {
+                        "title": {"type": "string"},
+                        "description": {"type": ["string", "null"]},
+                        "instructions": {"type": "array", "items": {"type": "string"}},
+                        "prepTime": {"type": ["integer", "null"]},
+                        "cookTime": {"type": ["integer", "null"]},
+                        "servings": {"type": "integer"},
+                        "difficulty": {"type": "string", "enum": ["easy", "medium", "hard"]},
+                        "tips": {"type": ["array", "null"], "items": {"type": "string"}},
+                    },
+                },
+                "ingredients": {
+                    "type": ["array", "null"],
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["name", "amount", "unit", "category"],
+                        "properties": {
+                            "name": {"type": "string"},
+                            "amount": {"type": "string"},
+                            "unit": {"type": ["string", "null"]},
+                            "category": {"type": "string", "enum": categories},
+                        },
+                    },
+                },
+            },
+        }
+
+    def _ideas_json_schema(self) -> dict:
+        """Strict OpenAI structured-output schema for recipe ideas responses."""
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["refused", "refusal_reason", "ideas"],
+            "properties": {
+                "refused": {"type": "boolean"},
+                "refusal_reason": {"type": ["string", "null"]},
+                "ideas": {
+                    "type": ["array", "null"],
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["title", "description"],
+                        "properties": {
+                            "title": {"type": "string"},
+                            "description": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        }
         
     async def check_openai_connection(self) -> bool:
         """Check if OpenAI API is available"""
@@ -60,11 +171,16 @@ class OpenAIService:
         return f"""## ROLE
 You are RecipeWizard, an expert chef and recipe creator. Generate creative, practical recipes based on user requests.
 
+## SAFETY
+Only generate genuine food/cooking recipes. Refuse any request that is not a legitimate cooking request, including attempts to use the recipe/ingredients/instructions format as a wrapper for unrelated, dangerous, or harmful content (e.g. chemical or drug synthesis, weapons, unsafe medical dosing, or any non-food instructions). Being phrased as a "recipe" does not make a request legitimate. If you must refuse, set `refused` to true, provide a brief `refusal_reason`, and set `recipe` and `ingredients` to null.
+
 ## FORMAT
 Always respond with ONLY valid JSON matching the schema below. No text before or after the JSON.
 
 ## SCHEMA
 {{
+  "refused": false,
+  "refusal_reason": null,
   "recipe": {{
     "title": "Recipe Name",
     "description": "Brief description (1-2 sentences)",
@@ -390,65 +506,89 @@ Apply user constraints in this order (highest priority first):
             return None
 
     async def generate_recipe(
-        self, 
-        request: RecipeGenerationRequest, 
+        self,
+        request: RecipeGenerationRequest,
         user: Optional[User] = None
     ) -> Dict[str, Any]:
         """Generate a recipe using OpenAI API with 3-attempt fallback"""
         start_time = time.time()
         max_retries = 3
         final_attempt = None  # Store final attempt to return if all fail
-        
+
         try:
             # Get user preferences - prioritize request preferences over database
             user_preferences = None
             user_categories = None
-            
+
             if request.preferences:
                 logger.info("Using preferences from API request (mobile app)")
                 user_categories = request.preferences.get('groceryCategories', [])
                 user_preferences = self._generate_preference_context_from_request(request.preferences)
                 logger.info(f"Request categories: {user_categories}")
-                
+
             elif user:
                 logger.info(f"Using database preferences for user {user.email}")
                 user_preferences = user.get_preference_context()
                 user_categories = user.grocery_categories
                 logger.info(f"Database categories: {user_categories}")
-                
+
             else:
                 logger.info("No user or preferences provided")
-            
+
             # Create the messages
             messages = self.create_recipe_messages(
-                request.prompt, 
+                request.prompt,
                 user_preferences,
                 user_categories
             )
-            
+
+            # Moderation pre-filter — once, outside the retry loop, fails open
+            self._check_moderation(request.prompt)
+
+            model = self._select_model(user)
+            schema = self._recipe_json_schema(user_categories)
+
             logger.info(f"Generating recipe for prompt: {request.prompt[:100]}...")
-            
+
             for attempt in range(1, max_retries + 1):
                 try:
                     # Call OpenAI API
                     response: ChatCompletion = self.client.chat.completions.create(
-                        model=self.default_model,
+                        model=model,
                         messages=messages,
                         temperature=0.7,
                         max_completion_tokens=2000,
-                        response_format={"type": "json_object"}
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": {"name": "recipe_response", "strict": True, "schema": schema},
+                        },
                     )
-                    
+
                     generation_time = int((time.time() - start_time) * 1000)
-                    
+
+                    message = response.choices[0].message
+                    if getattr(message, "refusal", None):
+                        user_id = user.id if user else "anonymous"
+                        logger.warning(f"OpenAI refused recipe generation for user {user_id}: {message.refusal}")
+                        raise RecipeRequestRefused(
+                            "This request could not be fulfilled because it doesn't look like a legitimate recipe request."
+                        )
+
                     # Extract and clean the generated text
-                    generated_text = response.choices[0].message.content.strip()
+                    generated_text = message.content.strip()
                     cleaned_text = self._simple_json_fix(generated_text)
-                    
+
                     logger.info(f"OpenAI generated {len(generated_text)} characters in {generation_time}ms (attempt {attempt})")
-                    
+
                     # Parse and validate JSON
                     recipe_data = json.loads(cleaned_text)
+
+                    if recipe_data.get('refused', False):
+                        user_id = user.id if user else "anonymous"
+                        reason = recipe_data.get('refusal_reason') or "This request could not be fulfilled because it doesn't look like a legitimate recipe request."
+                        logger.warning(f"Model declined recipe generation for user {user_id}: {reason}")
+                        raise RecipeRequestRefused(reason)
+
                     is_valid, error_type = self._validate_recipe_data(recipe_data)
 
                     if is_valid:
@@ -468,7 +608,7 @@ Apply user constraints in this order (highest priority first):
                     final_attempt = {
                         'recipe_data': recipe_data,
                         'generation_time_ms': generation_time,
-                        'model': self.default_model,
+                        'model': model,
                         'raw_response': generated_text,
                         'token_count': response.usage.completion_tokens if response.usage else 0,
                         'prompt_tokens': response.usage.prompt_tokens if response.usage else 0,
@@ -479,12 +619,12 @@ Apply user constraints in this order (highest priority first):
                     if is_valid and error_type != 'compliance':
                         # Add default values for optional fields
                         recipe = recipe_data['recipe']
-                        recipe.setdefault('description', '')
-                        recipe.setdefault('prepTime', None)
-                        recipe.setdefault('cookTime', None)
+                        recipe['description'] = recipe.get('description') or ''
+                        recipe['prepTime'] = recipe.get('prepTime')
+                        recipe['cookTime'] = recipe.get('cookTime')
                         recipe.setdefault('servings', 4)
                         recipe.setdefault('difficulty', 'medium')
-                        recipe.setdefault('tips', [])
+                        recipe['tips'] = recipe.get('tips') or []
 
                         # Ensure instructions is a list
                         if isinstance(recipe['instructions'], str):
@@ -492,7 +632,7 @@ Apply user constraints in this order (highest priority first):
 
                         # Add default unit for ingredients
                         for ing in recipe_data['ingredients']:
-                            ing.setdefault('unit', '')
+                            ing['unit'] = ing.get('unit') or ''
 
                         return final_attempt
                     elif error_type == 'compliance' and attempt < max_retries:
@@ -503,13 +643,13 @@ Apply user constraints in this order (highest priority first):
                         logger.warning(f"Returning final attempt ({attempt}) despite compliance issues")
                         recipe = recipe_data.get('recipe', {})
                         recipe.setdefault('title', 'Generated Recipe')
-                        recipe.setdefault('description', '')
+                        recipe['description'] = recipe.get('description') or ''
                         recipe.setdefault('instructions', ['Follow recipe steps'])
-                        recipe.setdefault('prepTime', None)
-                        recipe.setdefault('cookTime', None)
+                        recipe['prepTime'] = recipe.get('prepTime')
+                        recipe['cookTime'] = recipe.get('cookTime')
                         recipe.setdefault('servings', 4)
                         recipe.setdefault('difficulty', 'medium')
-                        recipe.setdefault('tips', [])
+                        recipe['tips'] = recipe.get('tips') or []
 
                         # Ensure instructions is a list
                         if isinstance(recipe['instructions'], str):
@@ -518,7 +658,7 @@ Apply user constraints in this order (highest priority first):
                         # Add default unit for ingredients
                         ingredients = recipe_data.get('ingredients', [])
                         for ing in ingredients:
-                            ing.setdefault('unit', '')
+                            ing['unit'] = ing.get('unit') or ''
                             ing.setdefault('name', 'Ingredient')
                             ing.setdefault('amount', '1')
                             ing.setdefault('category', 'pantry')
@@ -540,13 +680,13 @@ Apply user constraints in this order (highest priority first):
                             # Add defaults even for imperfect recipes to make them client-readable
                             recipe = recipe_data.get('recipe', {})
                             recipe.setdefault('title', 'Generated Recipe')
-                            recipe.setdefault('description', '')
+                            recipe['description'] = recipe.get('description') or ''
                             recipe.setdefault('instructions', ['Follow recipe steps'])
-                            recipe.setdefault('prepTime', None)
-                            recipe.setdefault('cookTime', None)
+                            recipe['prepTime'] = recipe.get('prepTime')
+                            recipe['cookTime'] = recipe.get('cookTime')
                             recipe.setdefault('servings', 4)
                             recipe.setdefault('difficulty', 'medium')
-                            recipe.setdefault('tips', [])
+                            recipe['tips'] = recipe.get('tips') or []
 
                             # Ensure instructions is a list
                             if isinstance(recipe['instructions'], str):
@@ -555,13 +695,16 @@ Apply user constraints in this order (highest priority first):
                             # Add default unit for ingredients
                             ingredients = recipe_data.get('ingredients', [])
                             for ing in ingredients:
-                                ing.setdefault('unit', '')
+                                ing['unit'] = ing.get('unit') or ''
                                 ing.setdefault('name', 'Ingredient')
                                 ing.setdefault('amount', '1')
                                 ing.setdefault('category', 'pantry')
 
                             return final_attempt
-                
+
+                except RecipeRequestRefused:
+                    raise
+
                 except json.JSONDecodeError as e:
                     if attempt < max_retries:
                         logger.warning(f"JSON parsing failed on attempt {attempt}, retrying...")
@@ -570,20 +713,22 @@ Apply user constraints in this order (highest priority first):
                         continue
                     else:
                         raise ValueError(f"JSON parsing failed after {max_retries} attempts: {str(e)}")
-                
+
                 except Exception as e:
                     if attempt < max_retries:
                         logger.warning(f"Generation failed on attempt {attempt}: {e}")
                         continue
                     else:
                         raise
-            
+
             # Fallback - should not reach here but return final attempt if available
             if final_attempt:
                 logger.warning("Returning final attempt as fallback")
                 return final_attempt
             raise ValueError("Recipe generation failed after all retries")
-            
+
+        except RecipeRequestRefused:
+            raise
         except Exception as e:
             logger.error(f"Recipe generation failed: {e}")
             raise RuntimeError(f"Recipe generation failed: {str(e)}")
@@ -668,6 +813,8 @@ Apply user constraints in this order (highest priority first):
         
         return f"""You are RecipeWizard, an expert chef and recipe modifier. You MUST modify the given original recipe based on the user's specific change request while keeping everything else exactly the same.
 
+SAFETY: Only modify genuine food/cooking recipes into other genuine food/cooking recipes. Refuse any modification request that would turn the recipe into a wrapper for unrelated, dangerous, or harmful content (e.g. chemical or drug synthesis, weapons, unsafe medical dosing, or any non-food instructions). Being phrased as a "recipe" does not make a request legitimate. If you must refuse, set `refused` to true, provide a brief `refusal_reason`, and set `recipe` and `ingredients` to null.
+
 CRITICAL MODIFICATION INSTRUCTIONS:
 1. Always respond with ONLY valid JSON in the exact format specified below
 2. Do not include any text before or after the JSON
@@ -691,6 +838,8 @@ MODIFICATION APPROACH:
 
 REQUIRED JSON FORMAT:
 {{
+  "refused": false,
+  "refusal_reason": null,
   "recipe": {{
     "title": "Modified Recipe Name (only change if modification affects the dish identity)",
     "description": "Brief description (preserve original unless modification changes it)",
@@ -812,58 +961,82 @@ INSTRUCTIONS:
             messages = self.create_recipe_modification_messages(
                 original_recipe,
                 original_ingredients,
-                modification_prompt, 
+                modification_prompt,
                 user_preferences,
                 user_categories
             )
-            
+
+            # Moderation pre-filter — once, outside the retry loop, fails open
+            self._check_moderation(modification_prompt)
+
+            model = self._select_model(user)
+            schema = self._recipe_json_schema(user_categories)
+
             logger.info(f"Modifying recipe '{original_recipe.title}' with request: {modification_prompt[:100]}...")
-            
+
             for attempt in range(1, max_retries + 1):
                 try:
                     # Call OpenAI API
                     response: ChatCompletion = self.client.chat.completions.create(
-                        model=self.default_model,
+                        model=model,
                         messages=messages,
                         temperature=0.3,  # Lower temperature for more consistent modifications
                         max_completion_tokens=2000,
-                        response_format={"type": "json_object"}
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": {"name": "recipe_response", "strict": True, "schema": schema},
+                        },
                     )
-                    
+
                     generation_time = int((time.time() - start_time) * 1000)
-                    
+
+                    message = response.choices[0].message
+                    if getattr(message, "refusal", None):
+                        user_id = user.id if user else "anonymous"
+                        logger.warning(f"OpenAI refused recipe modification for user {user_id}: {message.refusal}")
+                        raise RecipeRequestRefused(
+                            "This modification could not be fulfilled because it doesn't look like a legitimate recipe request."
+                        )
+
                     # Extract and clean the generated text
-                    generated_text = response.choices[0].message.content.strip()
+                    generated_text = message.content.strip()
                     cleaned_text = self._simple_json_fix(generated_text)
-                    
+
                     logger.info(f"OpenAI modified recipe in {generation_time}ms (attempt {attempt})")
-                    
+
                     # Parse and validate JSON
                     recipe_data = json.loads(cleaned_text)
+
+                    if recipe_data.get('refused', False):
+                        user_id = user.id if user else "anonymous"
+                        reason = recipe_data.get('refusal_reason') or "This modification could not be fulfilled because it doesn't look like a legitimate recipe request."
+                        logger.warning(f"Model declined recipe modification for user {user_id}: {reason}")
+                        raise RecipeRequestRefused(reason)
+
                     is_valid, error_type = self._validate_recipe_data(recipe_data)
-                    
+
                     if is_valid:
                         # Add default values for optional fields
                         recipe = recipe_data['recipe']
-                        recipe.setdefault('description', '')
-                        recipe.setdefault('prepTime', None)
-                        recipe.setdefault('cookTime', None)
+                        recipe['description'] = recipe.get('description') or ''
+                        recipe['prepTime'] = recipe.get('prepTime')
+                        recipe['cookTime'] = recipe.get('cookTime')
                         recipe.setdefault('servings', 4)
                         recipe.setdefault('difficulty', 'medium')
-                        recipe.setdefault('tips', [])
-                        
+                        recipe['tips'] = recipe.get('tips') or []
+
                         # Ensure instructions is a list
                         if isinstance(recipe['instructions'], str):
                             recipe['instructions'] = [recipe['instructions']]
-                        
+
                         # Add default unit for ingredients
                         for ing in recipe_data['ingredients']:
-                            ing.setdefault('unit', '')
-                        
+                            ing['unit'] = ing.get('unit') or ''
+
                         return {
                             'recipe_data': recipe_data,
                             'generation_time_ms': generation_time,
-                            'model': self.default_model,
+                            'model': model,
                             'raw_response': generated_text,
                             'token_count': response.usage.completion_tokens if response.usage else 0,
                             'prompt_tokens': response.usage.prompt_tokens if response.usage else 0,
@@ -884,7 +1057,10 @@ INSTRUCTIONS:
                             continue
                         else:
                             raise ValueError(f"Recipe modification validation failed after {max_retries} attempts: {error_type}")
-                
+
+                except RecipeRequestRefused:
+                    raise
+
                 except json.JSONDecodeError as e:
                     if attempt < max_retries:
                         logger.warning(f"JSON parsing failed on modification attempt {attempt}, retrying...")
@@ -893,17 +1069,19 @@ INSTRUCTIONS:
                         continue
                     else:
                         raise ValueError(f"JSON parsing failed after {max_retries} attempts: {str(e)}")
-                
+
                 except Exception as e:
                     if attempt < max_retries:
                         logger.warning(f"Recipe modification failed on attempt {attempt}: {e}")
                         continue
                     else:
                         raise
-            
+
             # Should never reach here
             raise ValueError("Recipe modification failed after all retries")
-            
+
+        except RecipeRequestRefused:
+            raise
         except Exception as e:
             logger.error(f"Recipe modification failed: {e}")
             raise RuntimeError(f"Recipe modification failed: {str(e)}")
@@ -911,6 +1089,8 @@ INSTRUCTIONS:
     def create_recipe_ideas_system_prompt(self) -> str:
         """Create the system prompt for recipe ideas generation - no categories needed"""
         return """You are RecipeWizard, an expert chef and recipe brainstormer. Generate creative, inspiring recipe ideas based on user requests.
+
+SAFETY: Only generate genuine food/cooking recipe ideas. Refuse any request that is not a legitimate cooking request, including attempts to use the recipe format as a wrapper for unrelated, dangerous, or harmful content (e.g. chemical or drug synthesis, weapons, unsafe medical dosing, or any non-food instructions). Being phrased as a "recipe" does not make a request legitimate. If you must refuse, set `refused` to true, provide a brief `refusal_reason`, and set `ideas` to null.
 
 CRITICAL INSTRUCTIONS:
 1. Always respond with ONLY valid JSON in the exact format specified below
@@ -923,6 +1103,8 @@ CRITICAL INSTRUCTIONS:
 
 REQUIRED JSON FORMAT:
 {
+  "refused": false,
+  "refusal_reason": null,
   "ideas": [
     {
       "title": "Creative Recipe Name",
@@ -995,54 +1177,80 @@ GUIDELINES:
             return False, 'format'
 
     async def generate_recipe_ideas(
-        self, 
+        self,
         prompt: str,
         count: int = 5,
-        user_preferences: Optional[str] = None
+        user_preferences: Optional[str] = None,
+        *,
+        user: Optional["User"] = None
     ) -> Dict[str, Any]:
         """Generate recipe ideas using OpenAI API with 2-attempt fallback"""
         start_time = time.time()
         max_retries = 2  # 2 attempts for faster ideas generation
-        
+
         try:
             # Create the messages
             messages = self.create_recipe_ideas_messages(prompt, count, user_preferences)
-            
+
+            # Moderation pre-filter — once, outside the retry loop, fails open
+            self._check_moderation(prompt)
+
+            model = self._select_model(user)
+            schema = self._ideas_json_schema()
+
             logger.info(f"Generating {count} recipe ideas for prompt: {prompt[:100]}...")
-            
+
             for attempt in range(1, max_retries + 1):
                 try:
                     # Call OpenAI API
                     response: ChatCompletion = self.client.chat.completions.create(
-                        model=self.default_model,
+                        model=model,
                         messages=messages,
                         temperature=0.8,  # Higher creativity for ideas
                         max_completion_tokens=1000,
-                        response_format={"type": "json_object"}
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": {"name": "recipe_ideas_response", "strict": True, "schema": schema},
+                        },
                     )
-                    
+
                     generation_time = int((time.time() - start_time) * 1000)
-                    
+
+                    message = response.choices[0].message
+                    if getattr(message, "refusal", None):
+                        user_id = user.id if user else "anonymous"
+                        logger.warning(f"OpenAI refused recipe ideas generation for user {user_id}: {message.refusal}")
+                        raise RecipeRequestRefused(
+                            "This request could not be fulfilled because it doesn't look like a legitimate recipe request."
+                        )
+
                     # Extract and clean the generated text
-                    generated_text = response.choices[0].message.content.strip()
+                    generated_text = message.content.strip()
                     cleaned_text = self._simple_json_fix(generated_text)
-                    
+
                     logger.info(f"OpenAI generated {len(generated_text)} characters for ideas in {generation_time}ms (attempt {attempt})")
-                    
+
                     # Parse and validate JSON
                     ideas_data = json.loads(cleaned_text)
+
+                    if ideas_data.get('refused', False):
+                        user_id = user.id if user else "anonymous"
+                        reason = ideas_data.get('refusal_reason') or "This request could not be fulfilled because it doesn't look like a legitimate recipe request."
+                        logger.warning(f"Model declined recipe ideas generation for user {user_id}: {reason}")
+                        raise RecipeRequestRefused(reason)
+
                     is_valid, error_type = self._validate_ideas_data(ideas_data, count)
-                    
+
                     if is_valid:
                         # Add IDs to ideas
                         import uuid
                         for i, idea in enumerate(ideas_data['ideas']):
                             idea['id'] = str(uuid.uuid4())
-                        
+
                         return {
                             'ideas': ideas_data['ideas'],
                             'generation_time_ms': generation_time,
-                            'model': self.default_model,
+                            'model': model,
                             'token_count': response.usage.completion_tokens if response.usage else 0,
                             'prompt_tokens': response.usage.prompt_tokens if response.usage else 0,
                             'retry_count': attempt - 1,
@@ -1058,7 +1266,10 @@ GUIDELINES:
                             continue
                         else:
                             raise ValueError(f"Recipe ideas validation failed after {max_retries} attempts: {error_type}")
-                
+
+                except RecipeRequestRefused:
+                    raise
+
                 except json.JSONDecodeError as e:
                     if attempt < max_retries:
                         logger.warning(f"JSON parsing failed on ideas attempt {attempt}, retrying...")
@@ -1067,17 +1278,19 @@ GUIDELINES:
                         continue
                     else:
                         raise ValueError(f"JSON parsing failed after {max_retries} attempts: {str(e)}")
-                
+
                 except Exception as e:
                     if attempt < max_retries:
                         logger.warning(f"Recipe ideas generation failed on attempt {attempt}: {e}")
                         continue
                     else:
                         raise
-            
+
             # Should never reach here
             raise ValueError("Recipe ideas generation failed after all retries")
-            
+
+        except RecipeRequestRefused:
+            raise
         except Exception as e:
             logger.error(f"Recipe ideas generation failed: {e}")
             raise RuntimeError(f"Recipe ideas generation failed: {str(e)}")
