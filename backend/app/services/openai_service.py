@@ -556,7 +556,6 @@ Apply user constraints in this order (highest priority first):
                     response: ChatCompletion = self.client.chat.completions.create(
                         model=model,
                         messages=messages,
-                        temperature=0.7,
                         max_completion_tokens=2000,
                         response_format={
                             "type": "json_schema",
@@ -980,7 +979,6 @@ INSTRUCTIONS:
                     response: ChatCompletion = self.client.chat.completions.create(
                         model=model,
                         messages=messages,
-                        temperature=0.3,  # Lower temperature for more consistent modifications
                         max_completion_tokens=2000,
                         response_format={
                             "type": "json_schema",
@@ -1206,7 +1204,6 @@ GUIDELINES:
                     response: ChatCompletion = self.client.chat.completions.create(
                         model=model,
                         messages=messages,
-                        temperature=0.8,  # Higher creativity for ideas
                         max_completion_tokens=1000,
                         response_format={
                             "type": "json_schema",
