@@ -73,11 +73,16 @@ export function RecipeSection({ recipe, style }: RecipeSectionProps) {
   };
 
   // Ensure we have a safe string title
-  const safeTitle = typeof recipe.title === 'string' && recipe.title.trim() 
-    ? recipe.title 
+  const safeTitle = typeof recipe.title === 'string' && recipe.title.trim()
+    ? recipe.title
     : 'Recipe';
 
-  const subtitle = `${recipe.instructions?.length || 0} steps${getTotalTime() ? ` • ${getTotalTime()}` : ''}`;
+  // Drop blank steps (the model occasionally returns a trailing empty string)
+  const steps = (recipe.instructions || []).filter(
+    (instruction) => typeof instruction === 'string' && instruction.trim().length > 0
+  );
+
+  const subtitle = `${steps.length} steps${getTotalTime() ? ` • ${getTotalTime()}` : ''}`;
 
   return (
     <ExpandableCard
@@ -249,11 +254,11 @@ export function RecipeSection({ recipe, style }: RecipeSectionProps) {
           </Text>
 
           <View style={{ gap: theme.spacing.lg }}>
-            {(recipe.instructions || []).map((instruction, index) => (
+            {steps.map((instruction, index) => (
               <InstructionStep
                 key={index}
                 stepNumber={index + 1}
-                instruction={instruction || `Step ${index + 1}`}
+                instruction={instruction}
               />
             ))}
           </View>
