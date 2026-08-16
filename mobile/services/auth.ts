@@ -1,6 +1,37 @@
 // Authentication service for handling user login/registration
 import * as SecureStore from 'expo-secure-store';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL } from './config';
+
+// SecureStore has no working implementation on web (expo-secure-store's web
+// shim is a stub and throws). Prefer SecureStore everywhere; fall back to
+// AsyncStorage only when it's unavailable, mirroring deviceId.ts.
+async function secureSetItem(key: string, value: string): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(key, value);
+  } catch (error) {
+    console.warn(`⚠️ SecureStore unavailable for "${key}", falling back to AsyncStorage:`, error);
+    await AsyncStorage.setItem(key, value);
+  }
+}
+
+async function secureGetItem(key: string): Promise<string | null> {
+  try {
+    return await SecureStore.getItemAsync(key);
+  } catch (error) {
+    console.warn(`⚠️ SecureStore unavailable for "${key}", falling back to AsyncStorage:`, error);
+    return await AsyncStorage.getItem(key);
+  }
+}
+
+async function secureDeleteItem(key: string): Promise<void> {
+  try {
+    await SecureStore.deleteItemAsync(key);
+  } catch (error) {
+    console.warn(`⚠️ SecureStore unavailable for "${key}", falling back to AsyncStorage:`, error);
+  }
+  await AsyncStorage.removeItem(key);
+}
 
 export interface LoginCredentials {
   email: string;
@@ -92,8 +123,8 @@ export class AuthService {
       
       // Store tokens and credentials securely for refresh
       await this.storeTokens(tokens);
-      await SecureStore.setItemAsync(CREDENTIALS_KEY, JSON.stringify(credentials));
-      
+      await secureSetItem(CREDENTIALS_KEY, JSON.stringify(credentials));
+
       // console.log('✅ Login successful for:', tokens.user.email);
       return tokens;
       
@@ -128,11 +159,11 @@ export class AuthService {
       
       // Store tokens and credentials securely for refresh
       await this.storeTokens(tokens);
-      await SecureStore.setItemAsync(CREDENTIALS_KEY, JSON.stringify({
+      await secureSetItem(CREDENTIALS_KEY, JSON.stringify({
         email: userData.email,
         password: userData.password
       }));
-      
+
       // console.log('✅ Registration successful for:', tokens.user.email);
       return tokens;
       
@@ -206,31 +237,31 @@ export class AuthService {
    * Store authentication tokens securely
    */
   static async storeTokens(tokens: AuthTokens): Promise<void> {
-    await SecureStore.setItemAsync(TOKEN_KEY, tokens.accessToken);
-    await SecureStore.setItemAsync(USER_KEY, JSON.stringify(tokens.user));
+    await secureSetItem(TOKEN_KEY, tokens.accessToken);
+    await secureSetItem(USER_KEY, JSON.stringify(tokens.user));
   }
 
   /**
    * Clear stored authentication data
    */
   static async clearTokens(): Promise<void> {
-    await SecureStore.deleteItemAsync(TOKEN_KEY);
-    await SecureStore.deleteItemAsync(USER_KEY);
-    await SecureStore.deleteItemAsync(CREDENTIALS_KEY);
+    await secureDeleteItem(TOKEN_KEY);
+    await secureDeleteItem(USER_KEY);
+    await secureDeleteItem(CREDENTIALS_KEY);
   }
 
   /**
    * Get stored authentication token
    */
   static async getStoredToken(): Promise<string | null> {
-    return await SecureStore.getItemAsync(TOKEN_KEY);
+    return await secureGetItem(TOKEN_KEY);
   }
 
   /**
    * Get stored user data
    */
   static async getStoredUser(): Promise<User | null> {
-    const userJson = await SecureStore.getItemAsync(USER_KEY);
+    const userJson = await secureGetItem(USER_KEY);
     if (userJson) {
       try {
         return JSON.parse(userJson);
@@ -299,7 +330,7 @@ export class AuthService {
     }
 
     // JWT rejected: try credential-based re-authentication
-    const credentialsJson = await SecureStore.getItemAsync(CREDENTIALS_KEY);
+    const credentialsJson = await secureGetItem(CREDENTIALS_KEY);
     if (!credentialsJson) {
       await this.clearTokens();
       return null;
