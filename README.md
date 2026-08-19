@@ -371,19 +371,30 @@ DEBUG=True
 ```
 
 ### Mobile (Environment Variables)
-```bash
-# Set in your development environment
-export EXPO_PUBLIC_API_BASE_URL="http://localhost:8000"
 
-# Or in app.json
-{
-  "expo": {
-    "extra": {
-      "apiBaseUrl": "http://localhost:8000"
-    }
-  }
-}
+For local development, copy `mobile/.env.example` to `mobile/.env` (gitignored):
+
+```bash
+EXPO_PUBLIC_API_BASE_URL=http://localhost:8000
+
+# RevenueCat SDK keys — leave blank to run in mock mode (no purchases).
+# Mock mode is also forced automatically in Expo Go.
+EXPO_PUBLIC_REVENUE_CAT_API_KEY_IOS=appl_...
+EXPO_PUBLIC_REVENUE_CAT_API_KEY_ANDROID=goog_...
 ```
+
+**For EAS cloud builds**, `.env` is not uploaded. Variables live on EAS servers instead:
+
+```bash
+eas env:create preview --name EXPO_PUBLIC_REVENUE_CAT_API_KEY_IOS --value appl_... \
+  --scope project --type string --visibility plaintext
+eas env:list preview          # verify
+```
+
+Each build profile in `mobile/eas.json` declares which environment it reads via an
+explicit `"environment"` field (`preview` → `preview`, `production` → `production`).
+Omitting that field is the usual reason an EAS-hosted variable silently fails to
+reach a build.
 
 ## 📄 License
 

@@ -32,18 +32,22 @@ The app is feature-complete and functional. The current work is getting it onto 
 
 ### What is left before submission
 
-1. **Screenshots** for Google Play and App Store (required device sizes listed in each console).
-2. **Store listing copy**: short description, full description, promo text.
+**iOS side is now substantially unblocked** (see the 2026-08-17→19 session entry below): Apple Developer Program is active, the App Store Connect app record exists, both subscription products are created and priced, and RevenueCat's iOS app + products + offering are fully wired. What remains:
+
+1. **Screenshots** — iPhone 6.5" display is the required size on the version page (1242×2688, 2688×1242, 1284×2778, or 2778×1284). Must come off a real device. Android/Play sizes still outstanding too.
+2. **Store listing copy** — a full draft (promotional text, description, keywords, support URL, copyright) was written in the 2026-08-19 session but **not yet entered** into App Store Connect; Cameron wanted edits first. Re-draft rather than assuming the old text was approved.
 3. **Content rating questionnaire** in both consoles.
-4. **Apple Developer account** ($99/yr) — must be enrolled.
-5. **Google Play Developer account** ($25 one-time).
+4. ~~Apple Developer account~~ — **DONE.** Active, individual enrolment, Team ID `DN583LLRFX`, renews 2027-08-17, auto-renew deliberately OFF.
+5. **Google Play Developer account** ($25 one-time) — still not created.
 6. **Credentials for `eas submit`**:
-   - Apple: App Store Connect API key (.p8), key ID, issuer ID.
+   - Apple: App Store Connect API key `.p8` — **partially done.** A *general* App Store Connect API key exists (name "RevenueCat", Key ID `HAWBC3S2KN`, App Manager role, Issuer ID `cabf20c0-3d4c-4263-9448-3e249a15faea`), but `mobile/eas.json`'s `submit.production` block is still empty and no `.p8` is wired into EAS. Note this is a *different* key from the In-App Purchase key RevenueCat uses (see Gotchas).
    - Google: service account JSON key with Release Manager permissions in Play Console.
-7. **EAS build**: requires `! eas login` in an interactive session, then `eas build --profile production --platform all`.
-8. **App records** created in both consoles (manual web-UI step).
-9. **Review notes + demo account** for reviewers to get past auth.
-10. **(Optional, recommended)**: wire up Sentry for crash reporting before the first public build.
+7. **Upload a build to App Store Connect** via `eas submit` — every iOS build so far has been ad-hoc internal-distribution only. App Review requires a build actually attached to the version.
+8. **App records**: iOS **DONE** (Apple ID `6801989781`, bundle `com.cammybeck.recipewizard`, SKU `com.cammybeck.recipewizard`, primary language English (Australia)). Play Console record still to do.
+9. **Review notes + demo account** — guest mode may cover most of it, but the version page has a "Sign-In required" toggle that still needs a decision.
+10. **Bank account + tax forms** in App Store Connect — the Paid Apps Agreement is signed but sits at **"Pending User Info"** until these are supplied. Cameron must do this personally (Claude must not enter bank/tax identifiers).
+11. **EU trader status (DSA compliance)** — App Store Connect shows a red banner; required for EU availability.
+12. **(Optional, recommended)**: wire up Sentry for crash reporting before the first public build.
 
 ---
 
@@ -59,6 +63,18 @@ The app is feature-complete and functional. The current work is getting it onto 
 | Account-deletion URL | `https://cameronbeck-dev.github.io/recipe-wizard/delete-account.html` |
 | Android package | `com.cammybeck.recipewizard` |
 | iOS bundle ID | `com.cammybeck.recipewizard` |
+| Apple Team ID | `DN583LLRFX` (Cameron Beck, Individual) |
+| Apple Account (dev) | `cammybeck2@gmail.com` — note this is **not** the `cameron.aidan.beck@gmail.com` address used elsewhere |
+| App Store Connect app ID | `6801989781` |
+| ASC Issuer ID | `cabf20c0-3d4c-4263-9448-3e249a15faea` (shared by both key types below) |
+| ASC API key (general) | Key ID `HAWBC3S2KN`, role App Manager — for `eas submit`, not yet wired in |
+| ASC In-App Purchase key | Key ID `KAK5M2DNAT` (`SubscriptionKey_KAK5M2DNAT.p8`) — uploaded to RevenueCat |
+| Registered test iPhone UDID | `00008150-001225323A38C01C` |
+| iOS subscription group | `Recipe Wizard Premium`, group ID `22312572` |
+| iOS subscription products | `recipe_wizard_monthly` (Apple ID `6801992446`, $4.99/mo), `recipe_wizard_yearly` (Apple ID `6801994070`, $49.99/yr, 1-Year-Upfront billing) |
+| RevenueCat project ID | `2945a273` |
+| RevenueCat iOS app ID | `appbbb903bf31` ("Recipe Wizard (App Store)") |
+| RevenueCat iOS SDK key | `appl_UTnVxrttgxDeaqZOhwOhJDGnGjU` (public SDK key; stored in EAS env for `preview` + `production`) |
 | EAS project ID | `13d76684-3800-406a-a071-e2c02ca60824` |
 | `versionCode` | Not pinned here — both `mobile/eas.json` build profiles have `"autoIncrement": "versionCode"`, so EAS bumps it automatically on each build. Don't hand-edit it in `app.json`. |
 | Backend | FastAPI on Heroku (see `heroku.yml`) |
@@ -208,11 +224,26 @@ The three historical `*_IMPLEMENTATION*.md` / `*_CHECKLIST.md` files at repo roo
 - **`expo-secure-store` has no working web implementation** — `node_modules/expo-secure-store/build/ExpoSecureStore.web.js` is a bare `export default {}` stub, so every `SecureStore.*Async` call throws on web. `deviceId.ts` already guarded against this with a try/catch → AsyncStorage fallback; `auth.ts` didn't, which crashed login/signup outright in the browser build (native was unaffected). Fixed 2026-08-16 by routing all of `auth.ts`'s SecureStore calls through `secureSetItem`/`secureGetItem`/`secureDeleteItem` helpers that fall back to AsyncStorage on failure. **Any new code that calls `SecureStore` directly should use this same guarded pattern** (or route through one of these two files) rather than calling `expo-secure-store` raw.
 - **`Alert.alert()` (React Native) is a no-op on web** — `react-native-web` doesn't implement it, so it silently does nothing (no error, no fallback UI). This affects several confirmation/prompt flows (guest sign-in prompts, sign-out confirmation, the two-step Delete Account confirmation in `profile.tsx`). This is a known, accepted gap, not a bug to fix: native iOS/Android (the actual shipping target) are unaffected, and building a cross-platform modal replacement is out of scope for now. Don't be surprised when a button "does nothing" on web — check whether it's an `Alert.alert` call before assuming it's broken.
 - **RevenueCat has no working mode on web** — no mock, no sandbox; `Purchases.configure()` throws "Invalid API key. Use your Web Billing API key." on load (`purchases.ts`'s Expo Go mock-mode check doesn't cover `Platform.OS === 'web'`). This is cosmetic (shows a dismissible toast, doesn't block anything else) and hasn't been fixed — there's no way to test purchase/subscription flows on the web build at all; that testing can only happen via TestFlight/a dev build with a real sandbox tester account.
+- **The Premium Plans screen's infinite "Loading subscription plans..." spinner is a real UX bug, not just a config symptom.** `PremiumContext.refreshPurchases()` catches every `getOfferings()` failure and silently leaves `offerings` as `[]`; `plans.tsx` decides what to render purely on `offerings.length === 0`, with no error state and no timeout. So *any* RevenueCat/StoreKit failure looks identical to "still loading" — forever. This masked several days of debugging. If touching that screen, add a real error/timeout state rather than leaving the failure indistinguishable from loading.
+- **Apple's first subscription group must be *submitted with an app version* before StoreKit will serve products at all — including in Sandbox.** App Store Connect states this on the subscription group page ("Your first subscription group must be submitted with a new app version"), and while RevenueCat's docs and some Apple DTS replies suggest "Ready to Submit" is enough for sandbox, in practice products stuck in **"Prepare for Submission"** return nothing to `getOfferings()` and show **"Could not check"** as their Store Status in RevenueCat indefinitely (confirmed over 3 days, so it is not propagation lag). **Consequence: iOS subscription/purchase flows cannot be tested on-device until the app is actually submitted for review.** Don't burn time re-checking keys, rebuilding, or reinstalling to fix this — verify product status first.
+- **There are TWO different App Store Connect `.p8` key types and they are not interchangeable.** RevenueCat's "In-app purchase key configuration" requires a key from **Users and Access → Integrations → Keys → In-App Purchase**, which downloads as `SubscriptionKey_XXXXXXXXXX.p8`; RevenueCat validates the filename prefix and rejects anything else ("A file name with any other prefix could be a private key for a different Apple service"). The **App Store Connect API** key (from the sibling "App Store Connect API" section, downloads as `AuthKey_XXXXXXXXXX.p8`) is the one `eas submit` wants, and separately powers RevenueCat's optional product-import feature. Generating the wrong one first is an easy dead end. Both share the same Issuer ID.
+- **`mobile/eas.json` build profiles need an explicit `"environment"` field to pick up EAS-hosted env vars.** Variables created with `eas env:create <environment> ...` are not reliably pulled into a build just because the profile name matches the environment name — `preview` and `production` now set `"environment": "preview"` / `"environment": "production"` explicitly. To verify an env var actually landed in a build, download the IPA and grep the bundle: `unzip -q build.ipa -d x && grep -c "<value>" x/Payload/RecipeWizard.app/main.jsbundle`. That check is definitive and much faster than guessing from app behaviour.
 - **`RecipeSection.tsx` filters out blank/whitespace-only instruction strings** before counting steps or rendering them. The model occasionally returns a trailing empty string in the `instructions` array; it used to render as a numbered "Step N" placeholder with no text. Filtering happens once into a `steps` array used for both the card subtitle count and the rendered list — keep using that single filtered array if this code changes, rather than filtering in two places that could drift.
 
 ---
 
 ## Session history (recent)
+
+### 2026-08-16 → 2026-08-19 — iOS device testing path: Apple enrolment, App Store Connect + RevenueCat setup, subscription blocker found
+- **Goal**: get a real build onto Cameron's iPhone and test the subscription flow (never previously testable — web has no RevenueCat mode, Expo Go only mocks it).
+- **Apple Developer Program**: enrolled as an Individual (A$149, auto-renew deliberately declined). Payment initially appeared to fail — App Store Connect kept showing the same unpaid "Complete your purchase" page with the same Enrolment ID, so the flow was retried; the charge and confirmation email then arrived, and the account went from "Pending" to active within ~a day. Team ID `DN583LLRFX`.
+- **Device + builds**: registered the test iPhone via `eas device:create` (UDID `00008150-001225323A38C01C`) and produced several `preview`-profile internal-distribution iOS builds. **Install gotcha**: the expo.dev "Install" button silently does nothing outside Safari on iOS — it relies on an `itms-services://` link. That cost real time; use Safari.
+- **App Store Connect**: accepted the ASC Terms of Service, created the app record (Apple ID `6801989781`), signed the **Paid Apps Agreement** (now "Pending User Info" — bank account + tax forms still outstanding, Cameron must do those personally). Created subscription group `Recipe Wizard Premium` (`22312572`) with `recipe_wizard_monthly` ($4.99/mo) and `recipe_wizard_yearly` ($49.99/yr, 1-Year-Upfront), both all-countries, both localised. Prices deliberately match the hardcoded fallbacks already in `services/purchases.ts`.
+- **RevenueCat**: the project previously had **only** an Android app configured — no iOS app, and `EXPO_PUBLIC_REVENUE_CAT_API_KEY_IOS` was blank everywhere. Added the App Store app (`appbbb903bf31`), uploaded the In-App Purchase key, created both iOS products, attached the existing `premium_features` entitlement to each, and mapped them into the existing `default` offering's `$rc_annual` / `$rc_monthly` packages alongside the Android products. Set the SDK key in `mobile/.env` and as an EAS env var in both `preview` and `production`.
+- **`eas.json`**: added explicit `"environment"` fields to the `preview` and `production` build profiles (see Gotchas) so EAS-hosted env vars are actually pulled into builds.
+- **Outcome — still blocked, but the cause is now known.** The Premium Plans screen remains stuck on "Loading subscription plans...". Ruled out by direct evidence rather than guesswork: the RevenueCat key **is** correctly embedded in the shipped bundle (verified by unzipping the IPA and grepping `main.jsbundle`), and the SDK **is** reaching RevenueCat (a fresh anonymous customer appears in the dashboard within a minute of each launch). The actual blocker is that both subscription products sit in **"Prepare for Submission"** and Apple requires the first subscription group to be submitted with an app version before StoreKit serves them — even in Sandbox. See the two new Gotchas entries.
+- **Decision**: proceed with a real App Store submission (Cameron chose "do it properly now" over a throwaway unlock). A full store-listing copy draft was written but **not entered** — Cameron wanted edits first, so treat that draft as discarded and re-draft.
+- Commits this session: `eas.json` environment fields + these doc updates. `mobile/.env` holds the RevenueCat iOS key locally and is gitignored (the key is a public SDK key, also recorded in the identifiers table above).
 
 ### 2026-08-16 — Web UI testing pass, found and fixed 4 real production bugs
 - Deployed migration `009` (guest mode) to production and pushed the pending guest-mode commits to Heroku (this had been implemented but not yet deployed — see the guest-mode entry below), then used a local Expo web build (`npx expo start --web`, pointed at production via a new local-only `mobile/.env`) plus Claude-in-Chrome browser automation to actually exercise the app end-to-end rather than just deploying and hoping. This surfaced four real, previously-invisible bugs — all now fixed and deployed/committed:
